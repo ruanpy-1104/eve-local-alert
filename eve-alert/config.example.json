@@ -1,0 +1,31 @@
+{
+  "window": {
+    "title_keyword": "EVE",
+    "process_name": "exefile.exe"
+  },
+  "roi": {
+    "x": 0.10,
+    "y": 0.10,
+    "width": 0.30,
+    "height": 0.40
+  },
+  "detection": {
+    "min_area": 80,
+    "min_aspect_ratio": 1.5,
+    "confirm_frames": 3,
+    "downscale": 2,
+    "colors": [
+      "red",
+      "orange_red",
+      "orange",
+      "gray_white"
+    ],
+    "strictness": 50
+  },
+  "alert": {
+    "sound_file": "assets/alert.wav"
+  },
+  "loop": {
+    "fps": 12
+  }
+}

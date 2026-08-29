@@ -1,0 +1,9 @@
+mss>=9.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+pywin32>=306 ; platform_system == "Windows"
+psutil>=5.9.0
+PySide6>=6.5.0
+
+# 可选：独占全屏下使用 DXGI 桌面复制（仅 Windows）
+# dxcam>=0.0.5

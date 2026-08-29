@@ -245,6 +245,26 @@ class TestGrayWhiteSeparation:
             cv2.rectangle(f, (x + 2, 102), (x + 12, 112), (0, 0, 0), -1)  # 空心
         assert len(d.red_boxes(f)) == 1
 
+    def test_white_blob_rejected_but_gray_kept(self):
+        # 目标是「灰」而非「白」：纯白色实心方块（图标里的白色/白色文字）应剔除，
+        # 同尺寸的灰色中立图标应命中（平均明度检查）。
+        d = Detector(colors=["gray_white"])
+        f = _frame()
+        cv2.rectangle(f, (100, 100), (129, 129), WHITE, -1)  # 纯白
+        assert d.red_boxes(f) == []
+        g = _frame()
+        cv2.rectangle(g, (100, 100), (129, 129), GRAY, -1)  # 灰
+        assert len(d.red_boxes(g)) == 1
+
+    def test_tiny_white_name_excluded(self):
+        # 极小字体名字（下采样后成为紧贴的紧凑白块）不应命中，仅灰图标命中
+        d = Detector(colors=["gray_white"])
+        f = _frame()
+        cv2.rectangle(f, (30, 120), (49, 139), GRAY, -1)
+        for i in range(6):
+            cv2.rectangle(f, (56 + i * 6, 124), (60 + i * 6, 136), WHITE, -1)
+        assert len(d.red_boxes(f)) == 1
+
 
 class TestStrictness:
     """识别程度：宽松包含更多，严格判定更苛刻。"""

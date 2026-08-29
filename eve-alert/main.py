@@ -10,6 +10,11 @@ import sys
 import time
 from pathlib import Path
 
+from core.config import ConfigManager
+from core.logger import get_logger, setup_logging
+
+logger = get_logger(__name__)
+
 # Qt6 关闭高 DPI 坐标缩放，使 Qt 坐标与 win32 屏幕物理像素一致，
 # 保证遮罩框选 / 窗口矩形 / 捕获区域三者坐标同源不偏移。
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
@@ -48,7 +53,7 @@ def run_headless(config_path: Path) -> None:
         process_name=cfg.data["window"].get("process_name"),
     )
     win = locator.find()
-    print(f"[定位] 命中窗口: {win.title!r} 客户区: {win.rect}")
+    logger.info("命中窗口：%r 客户区：%s", win.title, win.rect)
 
     capture = Capture()
     roi = ROI(**cfg.data["roi"])
@@ -59,7 +64,7 @@ def run_headless(config_path: Path) -> None:
     alerter = Alerter(sound_file)
     interval = 1.0 / cfg.data["loop"].get("fps", 12)
 
-    print("[监控] 开始监控，Ctrl+C 退出")
+    logger.info("开始监控（帧率 %s FPS），Ctrl+C 退出", cfg.data["loop"].get("fps", 12))
     alerting = False
     try:
         while True:
@@ -76,7 +81,7 @@ def run_headless(config_path: Path) -> None:
                 alerter.stop()
             time.sleep(max(0.0, interval - (time.perf_counter() - started)))
     except KeyboardInterrupt:
-        print("\n[监控] 已停止")
+        logger.info("监控已停止（Ctrl+C）")
     finally:
         alerter.stop()
         capture.close()
@@ -98,6 +103,15 @@ def run_ui(config_path: Path) -> int:
 
 def main() -> None:
     _set_dpi_awareness()
+    # 用配置初始化日志（级别 / 文件路径可经 config.json 的 logging 段调整）
+    cfg = ConfigManager(CONFIG_PATH)
+    log_cfg = cfg.data.get("logging", {})
+    setup_logging(
+        CONFIG_PATH.parent,
+        level=log_cfg.get("level", "info"),
+        log_file=log_cfg.get("file"),
+    )
+    logger.info("EVE Alert 启动")
     if "--cli" in sys.argv:
         run_headless(CONFIG_PATH)
     else:

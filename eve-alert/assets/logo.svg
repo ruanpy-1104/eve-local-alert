@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- EVE Alert Logo · 扁平化：太空雷达 + EVE 飞船 + 红警标识 -->
+  <!-- 背景：深空海军蓝圆角徽标 -->
+  <rect x="16" y="16" width="480" height="480" rx="100" fill="#0d1b3a"/>
+
+  <!-- 雷达扫描环（监控/预警） -->
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#1e3b66" stroke-width="5"/>
+  <circle cx="256" cy="256" r="112" fill="none" stroke="#1e3b66" stroke-width="4"/>
+  <line x1="96" y1="256" x2="416" y2="256" stroke="#16294c" stroke-width="3"/>
+  <line x1="256" y1="96" x2="256" y2="416" stroke="#16294c" stroke-width="3"/>
+  <line x1="147" y1="147" x2="365" y2="365" stroke="#16294c" stroke-width="3"/>
+  <line x1="147" y1="365" x2="365" y2="147" stroke="#16294c" stroke-width="3"/>
+
+  <!-- 检测到的敌对信号（红色亮点） -->
+  <circle cx="168" cy="148" r="10" fill="#e63946"/>
+  <circle cx="352" cy="364" r="8" fill="#e63946"/>
+
+  <!-- EVE 舰船剪影（扁平浅色，水平向右飞行的修长舰） -->
+  <polygon fill="#e8eefb" points="
+    420,256
+    340,244
+    270,214
+    150,224
+    210,266
+    285,268
+    285,244
+    210,246
+    150,288
+    270,298
+    340,268"/>
+
+  <!-- 预警徽标：红色警示三角 + 白色感叹号（功能提示） -->
+  <polygon fill="#e63946" points="418,64 372,150 464,150"/>
+  <rect x="410" y="86" width="16" height="34" rx="4" fill="#ffffff"/>
+  <circle cx="418" cy="136" r="8" fill="#ffffff"/>
+</svg>

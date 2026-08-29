@@ -7,6 +7,10 @@ from __future__ import annotations
 import os
 import winsound
 
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class Alerter:
     """持续警报器：start 循环播放，stop 停止。"""
@@ -25,15 +29,18 @@ class Alerter:
         self._playing = True
         try:
             if self.sound_file and os.path.exists(self.sound_file):
+                logger.info("开始警报：%s", self.sound_file)
                 winsound.PlaySound(
                     self.sound_file,
                     winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP,
                 )
             else:
                 # 无警报音文件时退化为系统蜂鸣
+                logger.warning("警报音文件缺失，回退系统蜂鸣")
                 winsound.Beep(1000, 500)
         except Exception:
             # 播放失败时保持尽力而为，不中断监控流程
+            logger.exception("警报音播放失败")
             self._playing = False
 
     def stop(self) -> None:
@@ -41,4 +48,5 @@ class Alerter:
         if not self._playing:
             return
         self._playing = False
+        logger.info("停止警报")
         winsound.PlaySound(None, winsound.SND_PURGE)

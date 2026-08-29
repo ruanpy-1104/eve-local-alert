@@ -11,6 +11,10 @@ import psutil
 import win32gui
 import win32process
 
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class WindowInfo:
@@ -52,8 +56,17 @@ class WindowLocator:
 
         win32gui.EnumWindows(_callback, None)
         if not candidates:
+            logger.warning(
+                "未找到匹配窗口（标题关键字=%r，进程名=%r）",
+                self.title_keyword,
+                self.process_name,
+            )
             raise RuntimeError("未找到匹配的 EVE 窗口，请检查 config.json 的 window 配置")
-        return self._pick(candidates)
+        win = self._pick(candidates)
+        logger.info(
+            "命中窗口：%r 进程=%r 客户区=%s", win.title, win.process_name, win.rect
+        )
+        return win
 
     def _pick(self, candidates: list[WindowInfo]) -> WindowInfo:
         """选窗优先级：进程+标题都命中 > 仅进程命中 > 仅标题命中。"""

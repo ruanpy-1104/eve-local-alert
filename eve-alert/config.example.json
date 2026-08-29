@@ -25,5 +25,9 @@
   },
   "loop": {
     "fps": 12
+  },
+  "logging": {
+    "level": "info",
+    "file": "logs/eve-alert.log"
   }
 }

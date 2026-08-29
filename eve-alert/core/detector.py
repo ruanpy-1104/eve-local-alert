@@ -24,6 +24,9 @@ import cv2
 import numpy as np
 
 from core.colors import DEFAULT_ALERT_COLORS, DEFAULT_STRICTNESS, color_ranges
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class Detector:
@@ -41,6 +44,7 @@ class Detector:
         max_aspect: float = 1.6,
         min_fill: float = 0.70,
         achromatic_fill: float = 0.82,
+        gray_v_max: float = 155.0,
         need_name: bool = True,
         name_v: int = 90,
     ):
@@ -60,6 +64,9 @@ class Detector:
         # 彩色用常规填充率；灰白掩码会被名字文字污染，故用更高填充率剔除文字。
         self.min_fill = min_fill
         self.achromatic_fill = achromatic_fill
+        # 灰白还要求目标整体是「灰」而非「白」（平均明度上限）：白色名字文字 / 图标里的
+        # 白色高光平均 V 很高（约 180+），而中立灰图标平均 V 偏低（约 129），据此剔除白色。
+        self.gray_v_max = gray_v_max
         # need_name：优先以「图标右侧对齐的明亮名字文字」剔除背景干扰；
         # 但当整帧都没有名字（纯图标 ROI）时自动退化为仅凭几何判定，保证无名字也能识别。
         self.need_name = need_name
@@ -137,11 +144,13 @@ class Detector:
         return mask, hsv[..., 2]
 
     def _candidate_boxes(
-        self, mask: np.ndarray, v_chan: np.ndarray, min_fill: float
+        self, mask: np.ndarray, v_chan: np.ndarray, min_fill: float, gray_v_max: float | None = None
     ) -> list[tuple[int, int, int, int]]:
         """在单个颜色掩码上做连通域 + 几何筛选 + 两级名字验证。
 
         :param min_fill: 本次检测使用的实心填充率下限（彩色与灰白不同）。
+        :param gray_v_max: 灰白专用：连通域**平均明度**上限，超过则判为白色（名字文字 /
+            图标中的白色高光）而剔除；其它颜色为 None 不启用。
         名字验证采取**两级自适应**：先收集通过几何筛选的色块，再检查各自右侧是否有
         对齐的明亮名字文字。
         - 若帧内**存在**某图标带名字：说明是「图标 + 名字」的正常总览，只保留带名字
@@ -149,7 +158,7 @@ class Detector:
         - 若整帧**都没有**名字（纯图标 ROI）：退化为仅凭几何判定，无名字也能识别。
         """
         lo, hi = self._area_bounds(mask.shape[0], mask.shape[1])
-        n, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
         img_h, w_max = mask.shape
         candidates: list[tuple[int, int, int, int]] = []
         named: list[tuple[int, int, int, int]] = []
@@ -161,6 +170,9 @@ class Detector:
             if aspect < self.min_aspect or aspect > self.max_aspect:
                 continue
             if a / (w * h) < min_fill:
+                continue
+            # 灰白：目标须是「灰」而非「白」，用平均明度剔除白色文字 / 高光
+            if gray_v_max is not None and v_chan[labels == i].mean() > gray_v_max:
                 continue
             candidates.append((x, y, w, h))
             if self._has_aligned_name(v_chan, x, y, w, h, img_h, w_max):
@@ -191,7 +203,7 @@ class Detector:
             boxes += self._candidate_boxes(m, v, self.min_fill)
         if gray:
             m, v = self._mask_for(frame_bgr, gray)
-            boxes += self._candidate_boxes(m, v, self.achromatic_fill)
+            boxes += self._candidate_boxes(m, v, self.achromatic_fill, gray_v_max=self.gray_v_max)
         return boxes
 
     def has_red(self, frame_bgr: np.ndarray) -> bool:
@@ -212,4 +224,11 @@ class Detector:
             self._confirm_count += 1
         else:
             self._confirm_count = 0
-        return self._confirm_count >= self.confirm_frames
+        hit = self._confirm_count >= self.confirm_frames
+        if hit:  # 仅在命中（连续确认达成）时记一条 INFO，便于追踪警报触发原因
+            logger.info("命中目标：%d 个图标候选框（连续 %d/%d 帧）",
+                        len(boxes), self._confirm_count, self.confirm_frames)
+        else:
+            logger.debug("候选框=%d（确认计数 %d/%d）",
+                         len(boxes), self._confirm_count, self.confirm_frames)
+        return hit

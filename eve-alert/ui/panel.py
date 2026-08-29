@@ -32,10 +32,13 @@ from core.capture import Capture, client_size
 from core.colors import COLOR_ORDER, DEFAULT_ALERT_COLORS, EVE_COLORS
 from core.config import ConfigManager
 from core.detector import Detector
+from core.logger import get_logger
 from core.region_selector import ROI
 from core.window_locator import WindowInfo, WindowLocator, is_minimized
 from ui.preview import PreviewWidget
 from ui.window_picker import TargetPickerDialog
+
+logger = get_logger(__name__)
 
 REFRESH_GEOMETRY_EVERY = 30  # 每 N 帧重新定位窗口，跟随移动 / 缩放
 SELECTION_INTERVAL_MS = 150  # 框选模式下全窗口预览刷新间隔
@@ -84,6 +87,7 @@ class MonitorWorker(QThread):
             if not self._stop.is_set():
                 self.status.emit("已停止")
         except Exception as exc:  # noqa: BLE001
+            logger.error("监控线程异常：%s", exc, exc_info=True)
             self.error.emit(str(exc))
 
     def _loop(self) -> None:
@@ -129,10 +133,13 @@ class MonitorWorker(QThread):
                         alerter.stop()
                     if not minimized_reported:
                         minimized_reported = True
+                        logger.info("目标窗口已最小化，暂停监控")
                         self.status.emit("目标窗口已最小化，无法监控，请恢复窗口")
                         self.preview.emit(None)  # 面板显示"已最小化"占位提示
                     time.sleep(interval)
                     continue
+                if minimized_reported:
+                    logger.info("目标窗口已恢复，继续监控")
                 minimized_reported = False
 
                 cw, ch = client_size(win.handle)
@@ -195,36 +202,14 @@ class ColorPickerDialog(QDialog):
     def __init__(self, config: ConfigManager, parent=None):
         super().__init__(parent)
         self.config = config
-        self._capture = Capture()
-        self._locator = WindowLocator(
-            title_keyword=config.data["window"].get("title_keyword"),
-            process_name=config.data["window"].get("process_name"),
-        )
-        # 以 downscale=1 预览，保证掩码 / 外接框与画面一一对应
-        det_kwargs = dict(config.data["detection"])
-        det_kwargs["downscale"] = 1
-        self._detector = Detector(**det_kwargs)
-        self._win = None
-        self._frame: np.ndarray | None = None
-        self._tick_count = 0
 
         self.setWindowTitle("颜色选择")
-        self.setMinimumSize(560, 620)
+        self.setMinimumSize(480, 360)
         self._build_ui()
-
-        self._timer = QTimer(self)
-        self._timer.setInterval(100)  # 10 FPS 预览
-        self._timer.timeout.connect(self._tick)
-        self._timer.start()
 
     # ---- UI ----
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-
-        self.preview = PreviewWidget()
-        self.preview.set_placeholder("等待画面（确保目标程序已打开）")
-        self.preview.setMinimumSize(480, 220)
-        root.addWidget(self.preview, stretch=1)
 
         self.status_label = QLabel("勾选需要警报的颜色，识别程度越严格判定越苛刻、误报越少")
         root.addWidget(self.status_label)
@@ -313,14 +298,6 @@ class ColorPickerDialog(QDialog):
             level = "严格"
         self.strictness_value.setText(f"{value} · {level}")
 
-    def _rebuild_detector(self) -> None:
-        """按当前颜色与识别程度重建检测器并刷新预览。"""
-        det = dict(self.config.data["detection"])
-        det["colors"] = self._active_colors()
-        det["strictness"] = self.strictness_slider.value()
-        det["downscale"] = 1  # 预览与画面一一对应
-        self._detector = Detector(**det)
-
     def _on_strictness_changed(self, value: int) -> None:
         # 固定档位 0/25/50/75/100：拖动时吸附到最近档位
         snapped = round(value / 25) * 25
@@ -330,12 +307,10 @@ class ColorPickerDialog(QDialog):
             self.strictness_slider.blockSignals(False)
             value = snapped
         self._update_strictness_label()
-        self._rebuild_detector()
 
     def _on_color_toggled(self, _name: str) -> None:
-        """勾选颜色变化：刷新对勾并重建检测器。"""
+        """勾选颜色变化：刷新对勾标记。"""
         self._refresh_swatch_marks()
-        self._rebuild_detector()
 
     def _apply(self) -> None:
         det = dict(self.config.data["detection"])
@@ -344,34 +319,107 @@ class ColorPickerDialog(QDialog):
         self.config.update("detection", det)
         active = "、".join(EVE_COLORS[c]["label"] for c in det["colors"])
         level = "宽松" if det["strictness"] <= 33 else ("适中" if det["strictness"] <= 66 else "严格")
+        logger.info("保存颜色设置：颜色=[%s] 识别程度=%s(%d)",
+                    active, level, det["strictness"])
         self.status_label.setText(f"已保存：警报颜色 {active}，识别程度 {level}（{det['strictness']}）")
 
+
+class PreviewDialog(QDialog):
+    """独立预警预览窗口：显示框选监控区域画面与识别信息。
+
+    与监控线程独立运行：实时捕获 ROI 区域，叠加识别框与命中状态，
+    供用户单独查看识别效果（不占用主面板预览）。
+    """
+
+    def __init__(self, config: ConfigManager, root_dir: Path, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self._root = root_dir
+        self._capture = Capture()
+        self._locator = WindowLocator(
+            title_keyword=config.data["window"].get("title_keyword"),
+            process_name=config.data["window"].get("process_name"),
+        )
+        self._detector = Detector(**config.data["detection"])
+        self._det_cfg_key: str | None = None
+        self._win = None
+        self._tick_count = 0
+        self._last_status = time.perf_counter()
+        self._frames = 0
+
+        self.setWindowTitle("预警预览")
+        self.setMinimumSize(480, 320)
+        self._build_ui()
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(100)  # 10 FPS 预览
+        self._timer.timeout.connect(self._tick)
+
+    # ---- UI ----
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+
+        self.preview = PreviewWidget()
+        self.preview.set_placeholder("等待画面（确保目标程序已打开）")
+        root.addWidget(self.preview, stretch=1)
+
+        self.status_label = QLabel("预览：绿色框为识别到的目标颜色")
+        root.addWidget(self.status_label)
+
+        btn_row = QHBoxLayout()
+        self.close_btn = QPushButton("关闭")
+        self.close_btn.clicked.connect(self.close)
+        btn_row.addStretch()
+        btn_row.addWidget(self.close_btn)
+        root.addLayout(btn_row)
+
+    # ---- 事件 ----
     def _tick(self) -> None:
         try:
+            # 检测参数变化（颜色 / 识别程度）时重建检测器，保持与配置一致
+            key = repr(sorted(self.config.data["detection"].items()))
+            if key != self._det_cfg_key:
+                self._detector = Detector(**self.config.data["detection"])
+                self._det_cfg_key = key
+
             if self._win is None or self._tick_count % REFRESH_GEOMETRY_EVERY == 0:
                 self._win = self._locator.find()
             self._tick_count += 1
+
+            if is_minimized(self._win.handle):
+                self.preview.clear()
+                self.preview.set_placeholder("目标窗口已最小化，请恢复窗口")
+                return
+
             cw, ch = client_size(self._win.handle)
             roi = ROI(**self.config.data["roi"])
             region = roi.to_capture_region(0, 0, cw, ch)
             frame = self._capture.grab_window(self._win.handle, region)
-            self._frame = frame
-            self._show_preview(frame)
+            if frame is None or frame.size == 0:
+                return
+
+            hit = self._detector.detect(frame)
+            vis = frame.copy()
+            for x, y, w, h in self._detector.last_boxes:
+                cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            self.preview.set_image(bgr_to_qimage(vis))
+
+            self._frames += 1
+            now = time.perf_counter()
+            if now - self._last_status >= 0.5:
+                fps = self._frames / max(now - self._last_status, 1e-6)
+                self._frames = 0
+                self._last_status = now
+                state = "检测到目标颜色" if hit else "未检测到目标"
+                self.status_label.setText(f"识别：{state} | {fps:.1f} FPS")
         except RuntimeError as exc:
             self._win = None  # 窗口可能已关闭，下一帧重新定位
             self.status_label.setText(f"无法定位目标程序窗口：{exc}")
 
-    def _show_preview(self, frame: np.ndarray) -> None:
-        mask = self._detector.red_mask(frame)
-        vis = frame.copy()
-        if mask.shape[:2] == frame.shape[:2]:
-            green = np.zeros_like(vis)
-            green[:] = (60, 200, 60)
-            hit = mask > 0
-            vis[hit] = (vis[hit].astype(np.int16) + green[hit].astype(np.int16)) // 2
-        for x, y, w, h in self._detector.red_boxes(frame):
-            cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        self.preview.set_image(bgr_to_qimage(vis))
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._timer.isActive():
+            self._timer.start()
 
     def closeEvent(self, event) -> None:
         self._timer.stop()
@@ -387,6 +435,7 @@ class ControlPanel(QWidget):
         self.config = ConfigManager(config_path)
         self._root = config_path.parent
         self._worker: MonitorWorker | None = None
+        self._preview_dialog: PreviewDialog | None = None
 
         # 框选会话状态（在预览画面内完成区域选择）
         self._sel_target: WindowInfo | None = None
@@ -429,7 +478,7 @@ class ControlPanel(QWidget):
         self.pause_btn.setCheckable(True)
         self.pause_btn.setEnabled(False)
         self.pause_btn.setToolTip("点击后即使命中也不报警；红名离开后自动恢复预警")
-        self.target_btn = QPushButton("选择目标程序")
+        self.target_btn = QPushButton("选择程序")
         # 预警操作行：按钮与字体略微增大
         row_font = self.start_btn.font()
         row_font.setPointSize(row_font.pointSize() + 2)
@@ -443,8 +492,10 @@ class ControlPanel(QWidget):
 
         opt_row = QHBoxLayout()
         self.color_btn = QPushButton("颜色选择")
+        self.preview_btn = QPushButton("预览")
         self.test_btn = QPushButton("测试警报音")
         opt_row.addWidget(self.color_btn)
+        opt_row.addWidget(self.preview_btn)
         opt_row.addWidget(self.test_btn)
         opt_row.addStretch()
         root.addLayout(opt_row)
@@ -453,21 +504,8 @@ class ControlPanel(QWidget):
         self.pause_btn.toggled.connect(self._on_pause_toggled)
         self.target_btn.clicked.connect(self._select_target)
         self.color_btn.clicked.connect(self._open_color_picker)
+        self.preview_btn.clicked.connect(self._open_preview)
         self.test_btn.clicked.connect(self._test_alert)
-
-    def resizeEvent(self, event) -> None:
-        """面板拉伸固定比例：高度 = 控件 + 预览(预览宽度 / 监控程序宽高比)。
-        同步计算（无定时器），横 / 竖 / 斜向拉伸都保持与监控程序等比，不闪烁。"""
-        super().resizeEvent(event)
-        if self._resizing or self._prog_aspect <= 0:
-            return
-        self._resizing = True
-        try:
-            target = self._proportional_height()
-            if abs(self.height() - target) > 2:
-                self.resize(self.width(), target)
-        finally:
-            self._resizing = False
 
     def _proportional_height(self) -> int:
         """按监控程序宽高比计算目标高度：控件高 + 预览(窗口宽 - 边距)/程序比例。"""
@@ -521,7 +559,8 @@ class ControlPanel(QWidget):
             pass
         dialog = TargetPickerDialog(self, prefer_handle=prefer)
         if dialog.exec() != QDialog.Accepted or dialog.picked is None:
-            self.status_label.setText("未选择目标程序，可稍后点击「选择目标程序」")
+            logger.info("未选择目标程序")
+            self.status_label.setText("未选择程序，可稍后点击「选择程序」")
             return
         win = self._on_target_selected(dialog.picked)
         if win is not None:
@@ -542,6 +581,7 @@ class ControlPanel(QWidget):
             return None
         cw, ch = client_size(win.handle)
         self._set_program_aspect(cw, ch)
+        logger.info("已选择目标：%r 进程=%r", win.title, win.process_name)
         self.status_label.setText(f"已选择目标：{win.title}，请在预览画面中框选监控区域")
         return win
 
@@ -617,7 +657,8 @@ class ControlPanel(QWidget):
             width=rect_img.width() / fw,
             height=rect_img.height() / fh,
         )
-        if roi.width < 0.01 or roi.height < 0.01:
+        # 最小支持 1x1 像素选区
+        if roi.width < 1 / fw or roi.height < 1 / fh:
             self.status_label.setText("选区过小，请重新框选")
             return
         self.config.update(
@@ -671,6 +712,7 @@ class ControlPanel(QWidget):
         self._worker.alert_paused.connect(self._on_alert_paused)
         self._worker.start()
         self.start_btn.setText("停止预警")
+        logger.info("开始监控：目标窗口=%r", win.title)
         # 每次启动监控重置播报暂停状态
         self.pause_btn.blockSignals(True)
         self.pause_btn.setChecked(False)
@@ -687,6 +729,7 @@ class ControlPanel(QWidget):
         self.start_btn.setText("开始预警")
         self.pause_btn.setEnabled(False)
         self.status_label.setText("已停止预警")
+        logger.info("停止监控")
 
     def _on_preview(self, frame) -> None:
         if frame is None:
@@ -701,6 +744,7 @@ class ControlPanel(QWidget):
         QTimer.singleShot(1200, self._restore_status_style)
 
     def _on_error(self, message: str) -> None:
+        logger.error("监控出错：%s", message)
         self.status_label.setStyleSheet("color:#e67e22;font-weight:bold;")
         self.status_label.setText(f"错误：{message}")
         self.start_btn.setText("开始预警")
@@ -734,10 +778,18 @@ class ControlPanel(QWidget):
     def _restore_status_style(self) -> None:
         self.status_label.setStyleSheet("")
 
-    # ---- 颜色选择 ----
+    # ---- 颜色选择 / 预览 ----
     def _open_color_picker(self) -> None:
         dialog = ColorPickerDialog(self.config, self)
         dialog.exec()
+
+    def _open_preview(self) -> None:
+        """打开独立预览窗口：显示框选监控区域画面与识别信息。"""
+        if self._preview_dialog is None:
+            self._preview_dialog = PreviewDialog(self.config, self._root, self)
+        self._preview_dialog.show()
+        self._preview_dialog.raise_()
+        self._preview_dialog.activateWindow()
 
     def _test_alert(self) -> None:
         """测试警报音：循环播放 1.5 秒后停止。"""
@@ -746,6 +798,7 @@ class ControlPanel(QWidget):
         alerter = Alerter(path)
         alerter.start()
         self._test_alerter = alerter
+        logger.info("测试警报音：%s", path)
         self.status_label.setText("正在播放警报音（1.5 秒）...")
         QTimer.singleShot(
             1500,
@@ -754,6 +807,8 @@ class ControlPanel(QWidget):
 
     def closeEvent(self, event) -> None:
         self._end_selection()
+        if self._preview_dialog is not None:
+            self._preview_dialog.close()
         if self._worker is not None and self._worker.isRunning():
             self._worker.stop()
             self._worker.wait(2000)

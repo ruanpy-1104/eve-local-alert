@@ -53,7 +53,6 @@ def run_headless(config_path: Path) -> None:
         process_name=cfg.data["window"].get("process_name"),
     )
     win = locator.find()
-    logger.info("命中窗口：%r 客户区：%s", win.title, win.rect)
 
     capture = Capture()
     roi = ROI(**cfg.data["roi"])
@@ -64,7 +63,6 @@ def run_headless(config_path: Path) -> None:
     alerter = Alerter(sound_file)
     interval = 1.0 / cfg.data["loop"].get("fps", 12)
 
-    logger.info("开始监控（帧率 %s FPS），Ctrl+C 退出", cfg.data["loop"].get("fps", 12))
     alerting = False
     try:
         while True:
@@ -81,7 +79,7 @@ def run_headless(config_path: Path) -> None:
                 alerter.stop()
             time.sleep(max(0.0, interval - (time.perf_counter() - started)))
     except KeyboardInterrupt:
-        logger.info("监控已停止（Ctrl+C）")
+        pass
     finally:
         alerter.stop()
         capture.close()
@@ -101,17 +99,28 @@ def run_ui(config_path: Path) -> int:
     return app.exec()
 
 
+def _install_crash_logging() -> None:
+    """未捕获异常（闪退 / 崩溃）统一记录到日志，便于事后排查。"""
+
+    def _hook(exc_type, exc_value, exc_tb):
+        logger.critical(
+            "程序未捕获异常（闪退），traceback：", exc_info=(exc_type, exc_value, exc_tb)
+        )
+
+    sys.excepthook = _hook
+
+
 def main() -> None:
     _set_dpi_awareness()
-    # 用配置初始化日志（级别 / 文件路径可经 config.json 的 logging 段调整）
+    # 用配置初始化日志（仅记录异常 / 崩溃；级别 / 文件路径可经 config.json 的 logging 段调整）
     cfg = ConfigManager(CONFIG_PATH)
     log_cfg = cfg.data.get("logging", {})
     setup_logging(
         CONFIG_PATH.parent,
-        level=log_cfg.get("level", "info"),
+        level=log_cfg.get("level", "error"),
         log_file=log_cfg.get("file"),
     )
-    logger.info("EVE Alert 启动")
+    _install_crash_logging()
     if "--cli" in sys.argv:
         run_headless(CONFIG_PATH)
     else:

@@ -13,10 +13,6 @@ import mss
 import numpy as np
 import win32gui
 
-from core.logger import get_logger
-
-logger = get_logger(__name__)
-
 PW_RENDERFULLCONTENT = 0x00000002
 DIB_RGB_COLORS = 0
 
@@ -80,7 +76,6 @@ class Capture:
 
     def __init__(self):
         self._sct = mss.mss()
-        self._fallback_logged = False  # 只在每个实例首次回退时记一次日志，避免逐帧刷屏
 
     def grab_window(self, hwnd: int, region: dict[str, int]) -> np.ndarray:
         """捕获目标窗口客户区内 region 的内容，返回 BGR 帧。
@@ -92,11 +87,6 @@ class Capture:
         if frame is not None:
             return self._crop(frame, region)
         # 回退：按屏幕坐标捕获（PrintWindow 失效的独占全屏等场景）
-        if not self._fallback_logged:
-            self._fallback_logged = True
-            logger.warning(
-                "PrintWindow 渲染失败（独占全屏或特殊渲染管线的常见现象），回退到 mss 屏幕捕获"
-            )
         left, top, right, bottom = win32gui.GetClientRect(hwnd)
         ox, oy = win32gui.ClientToScreen(hwnd, (left, top))
         screen_region = {

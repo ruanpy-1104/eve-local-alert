@@ -1,14 +1,13 @@
 """日志模块。
 
-统一配置 Python 标准库 `logging`，为整个工具提供结构化日志：
-- **滚动文件**：默认写入「项目根/logs/eve-alert.log」，超过 max_bytes 自动轮转，
-  避免长时间运行的监控日志无限增长；
-- **控制台**：同步输出（对 `--cli` 无界面模式与启动排查尤其有用）；
-- 日志级别可通过 config.json 的 `logging.level` 配置（debug/info/warning/error/critical）。
+统一配置 Python 标准库 `logging`，**仅记录异常 / 崩溃信息**（ERROR 及以上，
+含 traceback）：监控线程异常、未捕获异常导致的闪退、警报播放失败等。
+普通生命周期事件（启动 / 配置载入 / 窗口定位 / 检测命中等）不再写日志，保持日志简洁。
 
-日志点覆盖关键生命周期事件，便于排查识别误报 / 漏报、窗口定位失败等问题：
-启动/退出、配置载入与保存、窗口定位命中与否、捕获方式（PrintWindow / mss 回退）、
-检测命中、警报启停与暂停恢复、以及各类异常（含 traceback）。
+- **滚动文件**：默认写入「项目根/logs/eve-alert.log」，超过 max_bytes 自动轮转；
+- **控制台**：同步输出（仅 ERROR 及以上），便于启动排查；
+- 日志级别可通过 config.json 的 `logging.level` 配置（debug/info/warning/error/critical），
+  默认 `error`。
 """
 from __future__ import annotations
 
@@ -34,19 +33,19 @@ _formatter = logging.Formatter(
 
 
 def parse_level(value: object) -> int:
-    """把配置里的级别（字符串或数字）转为 logging 级别；非法值回退 INFO。"""
+    """把配置里的级别（字符串或数字）转为 logging 级别；非法值回退 ERROR。"""
     if isinstance(value, bool):
-        return logging.INFO
+        return logging.ERROR
     if isinstance(value, int):
         return value
     if isinstance(value, str):
-        return _LOGGER_LEVELS.get(value.strip().lower(), logging.INFO)
-    return logging.INFO
+        return _LOGGER_LEVELS.get(value.strip().lower(), logging.ERROR)
+    return logging.ERROR
 
 
 def setup_logging(
     base_dir: Path | None = None,
-    level: object = logging.INFO,
+    level: object = logging.ERROR,
     log_file: str | None = DEFAULT_LOG_FILENAME,
     max_bytes: int = 2_000_000,
     backup_count: int = 3,

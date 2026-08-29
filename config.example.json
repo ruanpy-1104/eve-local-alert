@@ -24,10 +24,10 @@
     "sound_file": "assets/alert.wav"
   },
   "loop": {
-    "fps": 12
+    "fps": 6
   },
   "logging": {
-    "level": "info",
+    "level": "error",
     "file": "logs/eve-alert.log"
   }
 }

@@ -24,9 +24,6 @@ import cv2
 import numpy as np
 
 from core.colors import DEFAULT_ALERT_COLORS, DEFAULT_STRICTNESS, color_ranges
-from core.logger import get_logger
-
-logger = get_logger(__name__)
 
 
 class Detector:
@@ -246,11 +243,4 @@ class Detector:
             self._confirm_count += 1
         else:
             self._confirm_count = 0
-        hit = self._confirm_count >= self.confirm_frames
-        if hit:  # 仅在命中（连续确认达成）时记一条 INFO，便于追踪警报触发原因
-            logger.info("命中目标：%d 个图标候选框（连续 %d/%d 帧）",
-                        len(boxes), self._confirm_count, self.confirm_frames)
-        else:
-            logger.debug("候选框=%d（确认计数 %d/%d）",
-                         len(boxes), self._confirm_count, self.confirm_frames)
-        return hit
+        return self._confirm_count >= self.confirm_frames

@@ -133,13 +133,10 @@ class MonitorWorker(QThread):
                         alerter.stop()
                     if not minimized_reported:
                         minimized_reported = True
-                        logger.info("目标窗口已最小化，暂停监控")
                         self.status.emit("目标窗口已最小化，无法监控，请恢复窗口")
                         self.preview.emit(None)  # 面板显示"已最小化"占位提示
                     time.sleep(interval)
                     continue
-                if minimized_reported:
-                    logger.info("目标窗口已恢复，继续监控")
                 minimized_reported = False
 
                 cw, ch = client_size(win.handle)
@@ -319,8 +316,6 @@ class ColorPickerDialog(QDialog):
         self.config.update("detection", det)
         active = "、".join(EVE_COLORS[c]["label"] for c in det["colors"])
         level = "宽松" if det["strictness"] <= 33 else ("适中" if det["strictness"] <= 66 else "严格")
-        logger.info("保存颜色设置：颜色=[%s] 识别程度=%s(%d)",
-                    active, level, det["strictness"])
         self.status_label.setText(f"已保存：警报颜色 {active}，识别程度 {level}（{det['strictness']}）")
 
 
@@ -559,7 +554,6 @@ class ControlPanel(QWidget):
             pass
         dialog = TargetPickerDialog(self, prefer_handle=prefer)
         if dialog.exec() != QDialog.Accepted or dialog.picked is None:
-            logger.info("未选择目标程序")
             self.status_label.setText("未选择程序，可稍后点击「选择程序」")
             return
         win = self._on_target_selected(dialog.picked)
@@ -581,7 +575,6 @@ class ControlPanel(QWidget):
             return None
         cw, ch = client_size(win.handle)
         self._set_program_aspect(cw, ch)
-        logger.info("已选择目标：%r 进程=%r", win.title, win.process_name)
         self.status_label.setText(f"已选择目标：{win.title}，请在预览画面中框选监控区域")
         return win
 
@@ -712,7 +705,6 @@ class ControlPanel(QWidget):
         self._worker.alert_paused.connect(self._on_alert_paused)
         self._worker.start()
         self.start_btn.setText("停止预警")
-        logger.info("开始监控：目标窗口=%r", win.title)
         # 每次启动监控重置播报暂停状态
         self.pause_btn.blockSignals(True)
         self.pause_btn.setChecked(False)
@@ -729,7 +721,6 @@ class ControlPanel(QWidget):
         self.start_btn.setText("开始预警")
         self.pause_btn.setEnabled(False)
         self.status_label.setText("已停止预警")
-        logger.info("停止监控")
 
     def _on_preview(self, frame) -> None:
         if frame is None:
@@ -798,7 +789,6 @@ class ControlPanel(QWidget):
         alerter = Alerter(path)
         alerter.start()
         self._test_alerter = alerter
-        logger.info("测试警报音：%s", path)
         self.status_label.setText("正在播放警报音（1.5 秒）...")
         QTimer.singleShot(
             1500,

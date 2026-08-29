@@ -11,9 +11,9 @@ def test_parse_level():
     assert parse_level("debug") == logging.DEBUG
     assert parse_level("INFO") == logging.INFO
     assert parse_level("error") == logging.ERROR
-    assert parse_level("weird") == logging.INFO  # 非法值回退
+    assert parse_level("weird") == logging.ERROR  # 非法值回退 ERROR
     assert parse_level(30) == 30  # int 直通
-    assert parse_level(None) == logging.INFO
+    assert parse_level(None) == logging.ERROR
 
 
 def test_get_logger_namespaced():

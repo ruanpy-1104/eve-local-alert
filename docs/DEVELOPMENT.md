@@ -208,14 +208,14 @@ class Alerter:
 
 ```python
 DEFAULT_LOG_FILENAME: str                    # 默认日志文件 "logs/eve-alert.log"
-def parse_level(value) -> int                # 字符串/数字级别 -> logging 级别；非法回退 INFO
-def setup_logging(base_dir=None, level=INFO, log_file=..., max_bytes=2000000, backup_count=3) -> Path | None  # 幂等初始化：滚动文件 + 控制台
+def parse_level(value) -> int                # 字符串/数字级别 -> logging 级别；非法回退 ERROR
+def setup_logging(base_dir=None, level=ERROR, log_file=..., max_bytes=2000000, backup_count=3) -> Path | None  # 幂等初始化：滚动文件 + 控制台
 def get_logger(name=None) -> logging.Logger  # 取命名空间 logger（模块级用 get_logger(__name__)）
 ```
 
+- **仅记录异常 / 崩溃**：默认级别 `error`，只写 ERROR 及以上（含 traceback）——监控线程异常、未捕获异常导致的闪退（`main.py` 的 `sys.excepthook` 统一钩子）、警报播放失败等。普通生命周期事件不写日志，保持日志简洁。
 - 日志写入 `base_dir / log_file`（默认项目根 `logs/eve-alert.log`），超过 `max_bytes` 自动轮转保留 `backup_count` 份；日志目录不可写时降级为仅控制台，不中断程序。
-- 日志目录 `logs/` 已在 `.gitignore` 排除；`main.py` 启动时依 `config.json` 的 `logging` 段初始化。
-- 级别约定：`INFO` 生命周期与命中、`WARNING` 可恢复问题（未找到窗口 / 捕获回退 / 目标最小化 / 警报音缺失）、`ERROR` 致命错误（含 traceback）、`DEBUG` 逐帧检测明细。
+- 日志目录 `logs/` 已在 `.gitignore` 排除；`main.py` 启动时依 `config.json` 的 `logging` 段初始化（`level` 默认 `error`，也可调低到 warning/info/debug 排查）。
 
 ---
 

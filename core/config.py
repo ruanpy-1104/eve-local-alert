@@ -10,10 +10,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from core.logger import get_logger
-
-logger = get_logger(__name__)
-
 # 默认配置：旧版 config.json 缺字段时，通过深度合并自动补全
 DEFAULT_CONFIG: dict[str, Any] = {
     "window": {"title_keyword": "EVE", "process_name": "exefile.exe"},
@@ -27,7 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "alert": {"sound_file": "assets/alert.wav"},
     "loop": {"fps": 6},
-    "logging": {"level": "info", "file": "logs/eve-alert.log"},
+    "logging": {"level": "error", "file": "logs/eve-alert.log"},
 }
 
 # 旧版 config.json 中已废弃的检测字段（文字条形检测遗留），加载时自动剔除，避免传入 Detector 报错
@@ -60,14 +56,12 @@ class ConfigManager:
 
     def _load(self) -> dict:
         if not self.path.exists():
-            logger.info("配置文件不存在，使用默认配置：%s", self.path)
             return copy.deepcopy(DEFAULT_CONFIG)
         with open(self.path, encoding="utf-8") as f:
             loaded = json.load(f)
         data = _deep_merge(DEFAULT_CONFIG, loaded)
         if isinstance(data.get("detection"), dict):
             _normalize_detection(data["detection"])
-        logger.info("已加载配置：%s", self.path)
         return data
 
     def save(self) -> None:
@@ -75,12 +69,10 @@ class ConfigManager:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
-        logger.info("已保存配置：%s", self.path)
 
     def update(self, section: str, values: dict[str, Any]) -> None:
         """更新某个配置节（如 detection / alert / roi）并立即持久化。"""
         if section not in self.data or not isinstance(self.data[section], dict):
             self.data[section] = {}
         self.data[section].update(values)
-        logger.info("更新配置节 [%s]：%s", section, values)
         self.save()

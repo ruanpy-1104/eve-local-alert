@@ -204,6 +204,48 @@ class TestMultiColor:
         assert not d.has_red(_icon_frame((0, 0, 0)))  # 黑色默认未启用
 
 
+class TestGrayWhiteSeparation:
+    """灰白掩码会被名字文字污染，须用更高填充率把「实心图标」与「名字字形」分开。"""
+
+    def test_gray_white_icon_detected(self):
+        d = Detector(colors=["gray_white"])
+        assert d.has_red(_icon_frame(GRAY, name=True))
+
+    def test_gray_white_icon_detected_without_name(self):
+        # 纯图标 ROI（无名字）也能识别
+        d = Detector(colors=["gray_white"])
+        assert d.has_red(_icon_frame(GRAY, name=False))
+
+    def test_hollow_gray_blob_rejected(self):
+        # 空心/低填充的灰色形状（模拟名字字形 O/D 之类）应被填充率剔除，仅实心方块命中
+        d = Detector(colors=["gray_white"])
+        f = _frame()
+        cv2.rectangle(f, (100, 100), (114, 114), GRAY, -1)       # 外框
+        cv2.rectangle(f, (102, 102), (112, 112), (0, 0, 0), -1)  # 内部挖空，填充率低
+        assert not d.has_red(f)
+
+    def test_name_glyphs_not_detected(self):
+        # 一排空心白色字形（低填充率）代表名字文字：不应被当作中立图标目标
+        d = Detector(colors=["gray_white"])
+        f = _frame()
+        for i in range(4):
+            x = 100 + i * 18
+            cv2.rectangle(f, (x, 100), (x + 14, 114), WHITE, -1)
+            cv2.rectangle(f, (x + 2, 102), (x + 12, 112), (0, 0, 0), -1)  # 空心
+        assert d.red_boxes(f) == []
+
+    def test_gray_icon_detected_among_name_text(self):
+        # 实心中立图标 + 空心名字字形同帧：仅实心图标命中，名字字形不作为目标
+        d = Detector(colors=["gray_white"])
+        f = _frame()
+        _icon(f, GRAY, x=60, y=100)
+        for i in range(4):
+            x = 90 + i * 18
+            cv2.rectangle(f, (x, 100), (x + 14, 114), WHITE, -1)
+            cv2.rectangle(f, (x + 2, 102), (x + 12, 112), (0, 0, 0), -1)  # 空心
+        assert len(d.red_boxes(f)) == 1
+
+
 class TestStrictness:
     """识别程度：宽松包含更多，严格判定更苛刻。"""
 

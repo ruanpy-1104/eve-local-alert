@@ -1,6 +1,6 @@
 """目标识别模块。
 
-EVE 总览中，每个玩家名字**前方**都有一个实心小图标（约 13–15×13–15 像素，近正方形）
+EVE 总览中，每个玩家名字**前方**都有一个实心小图标（近正方形，尺寸随名字字体可调）
 用于区分友军 / 敌对 / 中立，图标颜色可在总览设置中更改（对应「警报颜色」）；
 而名字文字本身始终是白色 / 灰白，不随阵营变化。
 
@@ -10,6 +10,11 @@ EVE 总览中，每个玩家名字**前方**都有一个实心小图标（约 13
 - 用连通域筛出**紧凑小方块**（面积自适应、近正方形、实心填充率高）；
 - 校验图标右侧存在明亮的名字文字（白光 V 高），以剔除背景中颜色相近、但
   并非「图标 + 名字」结构的干扰元素（如红色恒星）。
+
+关键点：名字文字是白色/灰白，只会污染「灰白」掩码（彩色掩码不含白色文字）。
+而彩色图标下采样后填充率会下降（约 0.7–0.8），因此**把彩色与灰白分开检测**：
+- 彩色用常规填充率（避免下采样后漏掉图标）；
+- 灰白用更高填充率（下采样后仍是实心方块 fill≥0.9），从而把碎笔画般的名字文字剔除。
 
 随后以连续 N 帧时序确认抑制闪烁误报。
 """
@@ -35,6 +40,7 @@ class Detector:
         min_aspect: float = 0.7,
         max_aspect: float = 1.6,
         min_fill: float = 0.70,
+        achromatic_fill: float = 0.82,
         need_name: bool = True,
         name_v: int = 90,
     ):
@@ -51,7 +57,9 @@ class Detector:
         self.max_area = max_area
         self.min_aspect = min_aspect
         self.max_aspect = max_aspect
+        # 彩色用常规填充率；灰白掩码会被名字文字污染，故用更高填充率剔除文字。
         self.min_fill = min_fill
+        self.achromatic_fill = achromatic_fill
         # need_name：优先以「图标右侧对齐的明亮名字文字」剔除背景干扰；
         # 但当整帧都没有名字（纯图标 ROI）时自动退化为仅凭几何判定，保证无名字也能识别。
         self.need_name = need_name
@@ -97,17 +105,13 @@ class Detector:
         band = v_chan[y0:y1, rx : min(w_max, rx + rw)]
         return bool(band.size) and band.max() >= self.name_v
 
-    def _color_ranges(self) -> list[tuple[np.ndarray, np.ndarray]]:
-        """返回当前启用颜色在当前严格度下的 HSV 阈值区间。"""
-        t = self.strictness / 100.0
-        ranges: list[tuple[np.ndarray, np.ndarray]] = []
-        for name in self.colors:
-            for low, high in color_ranges(name, t):
-                ranges.append((np.array(low, dtype=np.uint8), np.array(high, dtype=np.uint8)))
-        return ranges
+    def _mask_for(
+        self, frame_bgr: np.ndarray, names: tuple[str, ...]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """为**指定颜色子集**构建联合掩码与明度 V 通道（均在（下采样后的）检测空间）。
 
-    def _analyze(self, frame_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """返回 (颜色掩码, 明度 V 通道)——均在（下采样后的）检测空间，供图标判定复用。"""
+        拆分彩色 / 灰白单独处理，使两者可用不同的填充率阈值去筛色块。
+        """
         if self.downscale > 1:
             frame_bgr = cv2.resize(
                 frame_bgr,
@@ -117,9 +121,13 @@ class Detector:
                 interpolation=cv2.INTER_AREA,
             )
         hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+        t = self.strictness / 100.0
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        for low, high in self._color_ranges():
-            mask = cv2.bitwise_or(mask, cv2.inRange(hsv, low, high))
+        for name in names:
+            for low, high in color_ranges(name, t):
+                lo = np.array(low, dtype=np.uint8)
+                hi = np.array(high, dtype=np.uint8)
+                mask = cv2.bitwise_or(mask, cv2.inRange(hsv, lo, hi))
 
         # 开运算去孤立噪点；仅在 1 倍下采样（核 3）时叠加，2 倍以上靠面积阈值过滤即可
         open_ksize = max(1, 3 // max(1, self.downscale))
@@ -128,22 +136,18 @@ class Detector:
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         return mask, hsv[..., 2]
 
-    def red_mask(self, frame_bgr: np.ndarray) -> np.ndarray:
-        """返回目标颜色掩码（下采样空间），供预览可视化使用。"""
-        mask, _ = self._analyze(frame_bgr)
-        return mask
+    def _candidate_boxes(
+        self, mask: np.ndarray, v_chan: np.ndarray, min_fill: float
+    ) -> list[tuple[int, int, int, int]]:
+        """在单个颜色掩码上做连通域 + 几何筛选 + 两级名字验证。
 
-    def red_boxes(self, frame_bgr: np.ndarray) -> list[tuple[int, int, int, int]]:
-        """返回图标候选区域的外接矩形 (x, y, w, h)（下采样空间）。
-
-        名字验证采取**两级自适应**：先把通过几何筛选（近方形 + 高填充 + 面积自适应）的
-        色块全部收集，再检查各自右侧是否有对齐的明亮名字文字。
-        - 若帧内**存在**某图标带名字：说明这是「图标 + 名字」的正常总览，则只保留带名字
-          的图标，从而剔除背景中颜色相近、但并非玩家条目的干扰（如红色恒星）；
-        - 若整帧**都没有**名字（纯图标 ROI）：判定为「仅图标」布局，退化为仅凭几何判定，
-          在无名字作为参考时也能识别图标。
+        :param min_fill: 本次检测使用的实心填充率下限（彩色与灰白不同）。
+        名字验证采取**两级自适应**：先收集通过几何筛选的色块，再检查各自右侧是否有
+        对齐的明亮名字文字。
+        - 若帧内**存在**某图标带名字：说明是「图标 + 名字」的正常总览，只保留带名字
+          的图标，剔除背景中颜色相近、但并非玩家条目的干扰（如红色恒星）；
+        - 若整帧**都没有**名字（纯图标 ROI）：退化为仅凭几何判定，无名字也能识别。
         """
-        mask, v_chan = self._analyze(frame_bgr)
         lo, hi = self._area_bounds(mask.shape[0], mask.shape[1])
         n, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
         img_h, w_max = mask.shape
@@ -156,7 +160,7 @@ class Detector:
             aspect = w / max(1, h)
             if aspect < self.min_aspect or aspect > self.max_aspect:
                 continue
-            if a / (w * h) < self.min_fill:
+            if a / (w * h) < min_fill:
                 continue
             candidates.append((x, y, w, h))
             if self._has_aligned_name(v_chan, x, y, w, h, img_h, w_max):
@@ -164,6 +168,31 @@ class Detector:
         if not self.need_name:
             return candidates
         return named if named else candidates
+
+    def red_mask(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """返回目标颜色掩码（下采样空间，所有启用颜色并集），供预览可视化使用。"""
+        mask, _ = self._mask_for(frame_bgr, self.colors)
+        return mask
+
+    def red_boxes(self, frame_bgr: np.ndarray) -> list[tuple[int, int, int, int]]:
+        """返回图标候选区域的外接矩形 (x, y, w, h)（下采样空间）。
+
+        名字文字是白色/灰白，会进入「灰白」掩码（彩色掩码不含白色文字）；而彩色图标
+        下采样后填充率降至 0.7–0.8。因此：
+        - 彩色（含黑）用常规填充率 `min_fill`，避免下采样后漏掉图标；
+        - 灰白用更高填充率 `achromatic_fill` 检测，碎笔画般的名字文字被填充率剔除。
+        两组掩码按颜色互斥（彩色 S 高、灰白 S 低），检测结果不相交，直接拼接。
+        """
+        gray = tuple(c for c in self.colors if c == "gray_white")
+        colored = tuple(c for c in self.colors if c != "gray_white")
+        boxes: list[tuple[int, int, int, int]] = []
+        if colored:
+            m, v = self._mask_for(frame_bgr, colored)
+            boxes += self._candidate_boxes(m, v, self.min_fill)
+        if gray:
+            m, v = self._mask_for(frame_bgr, gray)
+            boxes += self._candidate_boxes(m, v, self.achromatic_fill)
+        return boxes
 
     def has_red(self, frame_bgr: np.ndarray) -> bool:
         """单帧判定：是否包含图标候选区域（不做时序确认）。"""

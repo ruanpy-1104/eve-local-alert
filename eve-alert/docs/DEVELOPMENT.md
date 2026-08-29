@@ -168,7 +168,7 @@ class ROI:
 class Detector:
     def __init__(self, confirm_frames=3, downscale=2, colors=None, strictness=50,
                  min_area=None, max_area=None, min_aspect=0.7, max_aspect=1.6,
-                 min_fill=0.70, need_name=True, name_v=90): ...
+                 min_fill=0.70, achromatic_fill=0.82, need_name=True, name_v=90): ...
     def reset(self) -> None: ...
     def red_mask(self, frame_bgr: np.ndarray) -> np.ndarray: ...          # 颜色掩码（下采样空间）
     def red_boxes(self, frame_bgr: np.ndarray) -> list[tuple[int,int,int,int]]: ...  # 图标候选外接矩形
@@ -178,8 +178,9 @@ class Detector:
 
 - 检测对象是玩家名字**前方**的**实心小图标**（近正方形），而非文字条形；游戏内可自定义字体 / 图标大小，故判定**不依赖固定像素**。
 - 面积阈值随帧比例自适应：下限仅剔除噪点级小色块（取固定极小面积与帧面积 0.05% 二者较小值）、上限按帧面积留余量（铺满多数区域的整块底色除外）。`min_area` / `max_area` 显式给出时覆盖自动值。
-- `min_aspect` / `max_aspect`（0.7–1.6）与 `min_fill`（≥0.70）约束「近方形 + 高填充率」的紧凑色块，星形 / 圆形 / 散笔画因填充率或长宽比被剔除。
+- `min_aspect` / `max_aspect`（0.7–1.6）约束「近方形」；**填充率按颜色类别区别对待**：彩色图标下采样后填充率降至 0.7–0.8，用常规 `min_fill`（≥0.70）；名字文字是白色/灰白、只会污染「灰白」掩码，故灰白用更高 `achromatic_fill`（≥0.82）把碎笔画文字剔除，实心方块图标（fill≥0.9）仍命中。
 - `need_name`：两级自适应名字验证。若帧内存在某图标带「对齐的明亮名字文字」（V ≥ `name_v`），则只保留此类图标，剔除背景中颜色相近但非玩家条目的干扰（如红色恒星）；若整帧都没有名字（纯图标 ROI），则退化为仅凭几何判定，无名字参考也能识别。带宽 / 带高随图标尺寸缩放以匹配对齐。
+- **彩色与灰白分开建掩码检测**（`_mask_for` 按颜色子集建掩码、`_candidate_boxes` 按指定填充率筛块），两组结果按颜色互斥直接拼接，避免不同填充率互相干扰。
 - `detect` 传入后维护连续命中计数，连续 `confirm_frames` 帧命中才返回 True；同时把候选框乘以 `downscale` 写回 `last_boxes`（原分辨率）供预览叠加。
 
 ### 3.7 alerter（警报）
@@ -245,24 +246,44 @@ function red_mask(frame_bgr):
     return mask
 
 function red_boxes(frame_bgr):
-    mask, v_chan = red_mask_and_v(frame_bgr)     # 同时返回明度 V 通道
-    lo, hi = area_bounds(frame_h, frame_w)       # 自适应：下限剔除噪点、上限按帧面积留余量
+    gray = [c 属于 self.colors 且 c == "gray_white"]
+    colored = [c 属于 self.colors 且 c != "gray_white"]   # 含黑
+    boxes = []
+    if colored:
+        mask, v = _mask_for(frame_bgr, colored)           # 彩色掩码
+        boxes += _candidate_boxes(mask, v, min_fill=0.70)
+    if gray:
+        mask, v = _mask_for(frame_bgr, gray)              # 灰白掩码
+        boxes += _candidate_boxes(mask, v, min_fill=achromatic_fill=0.82)
+    return boxes                                           # 两组互斥，直接拼接
+
+function _mask_for(frame_bgr, names):
+    if downscale > 1: frame_bgr = resize(frame_bgr, 1/downscale)
+    hsv = cvtColor(frame_bgr, BGR2HSV); mask = 空掩码
+    for name in names:
+        for (low, high) in color_ranges(name, strictness):
+            mask |= inRange(hsv, low, high)
+    mask = morphologyEx(mask, OPEN)                        # 去孤立噪点（仅 1 倍下采样叠加）
+    return mask, hsv[..., 2]                               # 同时返回明度 V 通道
+
+function _candidate_boxes(mask, v_chan, min_fill):
+    lo, hi = area_bounds(frame_h, frame_w)                 # 自适应：下限剔除噪点、上限按帧面积留余量
     candidates, named = [], []
     for each component in connectedComponents(mask):
         (x, y, w, h, a) = 组件统计
         if a < lo 或 a > hi: continue
         aspect = w / h
         if aspect < min_aspect 或 aspect > max_aspect: continue
-        if a / (w * h) < min_fill: continue      # 非实心紧凑色块（星形/圆/笔画）剔除
+        if a / (w * h) < min_fill: continue                # 彩色0.70 / 灰白0.82，剔除星形/圆/文字笔画
         candidates.append((x, y, w, h))
-        if has_aligned_name(v_chan, x, y, w, h): # 名字与其对齐（带宽随图标尺寸缩放）
+        if has_aligned_name(v_chan, x, y, w, h):           # 名字与其对齐（带宽随图标尺寸缩放）
             named.append((x, y, w, h))
     if not need_name: return candidates
-    return named if named else candidates        # 帧内有名字→只用带名字的；纯图标→几何判定
+    return named if named else candidates                  # 帧内有名字→只用带名字的；纯图标→几何判定
 
 function detect(frame_bgr):
     boxes = red_boxes(frame_bgr)
-    last_boxes = 各框 × downscale                # 原分辨率，供预览叠加
+    last_boxes = 各框 × downscale                          # 原分辨率，供预览叠加
     连续 confirm_frames 帧 boxes 非空 → True，否则累加/清零计数
 ```
 

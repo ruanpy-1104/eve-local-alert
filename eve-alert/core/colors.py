@@ -21,8 +21,8 @@ EVE_COLORS: dict[str, dict] = {
         "label": "灰白",
         "rgb": (178, 178, 178),
         "achromatic": True,
-        "v_loose": 86,  # 宽松时明度下限（下探以捕获中立灰白图标 V≈112）
-        "v_strict": 106,  # 严格时明度下限（仍能捕获中立图标，仅排除更暗灰底）
+        "v_loose": 88,  # 宽松时明度下限（下探以捕获中立灰白图标 V≈107–123）
+        "v_strict": 100,  # 严格时明度下限（仍能捕获中立图标，仅排除更暗灰底）；白色名字文字靠填充率剔除
     },
     "green": {"label": "绿色", "rgb": (25, 153, 25), "center_h": 60},
     "teal": {"label": "青绿", "rgb": (0, 160, 145), "center_h": 87},
@@ -36,7 +36,7 @@ EVE_COLORS: dict[str, dict] = {
         "rgb": (0, 0, 0),
         "achromatic": True,
         "v_hi_loose": 100,  # 宽松时明度上限
-        "v_hi_strict": 60,  # 严格时明度上限（只认更暗）
+        "v_hi_strict": 55,  # 严格时明度上限（只认更暗）
     },
 }
 
@@ -49,10 +49,11 @@ DEFAULT_ALERT_COLORS: list[str] = ["red", "orange_red", "orange", "gray_white"]
 # 默认识别程度（0 宽松 ~ 100 严格）
 DEFAULT_STRICTNESS: int = 50
 
-# 彩色阈值带宽（宽松 / 严格两端）
-_H_LOOSE, _H_STRICT = 15, 5       # 色相半宽
-_S_LOOSE, _S_STRICT = 80, 150     # 饱和度下限
-_V_LOOSE, _V_STRICT = 40, 70      # 明度下限
+# 彩色阈值带宽（宽松 / 严格两端）。默认严格度 50 位于中点，
+# 使默认既能稳定命中 EVE 总览 12 种预设色，又不至于把背景杂色都纳入。
+_H_LOOSE, _H_STRICT = 14, 4       # 色相半宽（严格时收窄，避免色彩在相邻色之间串扰）
+_S_LOOSE, _S_STRICT = 70, 140     # 饱和度下限（越高越排除粉白灰）
+_V_LOOSE, _V_STRICT = 40, 75      # 明度下限（越高越排除暗部）
 
 
 def _lerp(a: float, b: float, t: float) -> float:

@@ -7,7 +7,7 @@ from core.config import ConfigManager
 class TestConfig:
     def test_missing_file_uses_defaults(self, tmp_path):
         cfg = ConfigManager(tmp_path / "config.json")
-        assert cfg.data["loop"]["fps"] == 12
+        assert cfg.data["loop"]["fps"] == 6
         assert cfg.data["detection"]["confirm_frames"] == 3
 
     def test_save_and_reload(self, tmp_path):
@@ -17,7 +17,7 @@ class TestConfig:
         cfg.save()
         reloaded = ConfigManager(path)
         assert reloaded.data["window"]["title_keyword"] == "TEST"
-        assert reloaded.data["loop"]["fps"] == 12  # 未改动字段保留
+        assert reloaded.data["loop"]["fps"] == 6  # 未改动字段保留
 
     def test_update_persists_and_preserves_others(self, tmp_path):
         path = tmp_path / "config.json"

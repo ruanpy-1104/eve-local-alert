@@ -140,11 +140,11 @@
           </thead>
           <tbody>
             <tr><td>语言</td><td>Python 3.11+</td><td>开发快、生态全，性能由底层 C 库承担。</td></tr>
-            <tr><td>屏幕捕获</td><td>mss（BitBlt），备用 dxcam（DXGI）</td><td>mss 简单可靠、支持按窗口矩形抓取；独占全屏场景用 DXGI 桌面复制兜底。</td></tr>
+            <tr><td>屏幕捕获</td><td>PrintWindow（窗口内容），mss 兜底</td><td>PrintWindow 直接渲染所选窗口自身画面，被遮挡也只捕获所选窗口；失效场景回退 mss 屏幕抓取。</td></tr>
             <tr><td>图像处理</td><td>OpenCV + NumPy</td><td>颜色阈值、形态学、轮廓均在 C++ 后端高速执行。</td></tr>
             <tr><td>窗口定位</td><td>pywin32（win32gui）</td><td>按进程名 / 窗口标题枚举并命中 EVE 窗口，读取窗口矩形。</td></tr>
-            <tr><td>GUI / 遮罩层</td><td>PySide6</td><td>透明置顶窗口、鼠标框选、控制面板；若追求更小体积可用 Tkinter 替代。</td></tr>
-            <tr><td>音频</td><td>winsound（stdlib），备用 pygame</td><td>winsound 零依赖播放 WAV；pygame 支持 mp3/ogg 与循环播放。</td></tr>
+            <tr><td>GUI</td><td>PySide6</td><td>控制面板、自动适应预览控件（预览内框选）、目标程序选择对话框；若追求更小体积可用 Tkinter 替代。</td></tr>
+            <tr><td>音频</td><td>winsound（stdlib）</td><td>SND_LOOP 循环播放 WAV，识别即播直到目标消失；文件缺失回退 Beep。</td></tr>
             <tr><td>配置</td><td>本地 JSON</td><td>无数据库、无网络，符合完全本地化要求。</td></tr>
             <tr><td>打包</td><td>PyInstaller / Nuitka</td><td>产出免安装 exe；Nuitka 编译后可进一步降低运行开销与启动时间。</td></tr>
           </tbody>
@@ -314,22 +314,29 @@ flowchart LR
 
     <section class="doc-block" id="structure">
       <h2>工程目录结构</h2>
-      <p>项目按“核心逻辑 / 界面 / 资源”分层，入口仅做装配，便于单测与后续替换（如将 PySide6 换成 Tkinter 只改 ui 层）。</p>
-      <pre class="codeblock"><code>eve-alert/
-├── main.py                 # 程序入口：装配各模块并启动检测循环
-├── config.json             # 本地配置：窗口标识、ROI 归一化坐标、颜色阈值、警报参数
+      <p>项目按“核心逻辑 / 界面 / 资源 / 测试 / 文档”分层，入口仅做装配，便于单测与后续替换（如将 PySide6 换成 Tkinter 只改 ui 层）。</p>
+      <pre class="codeblock"><code>├── main.py                 # 程序入口（UI 控制面板 / --cli 无 UI 闭环）
+├── config.example.json     # 配置模板（运行时 config.json 不入库，缺失时自动用默认值）
 ├── requirements.txt        # 依赖清单
 ├── core/
-│   ├── window_locator.py   # 窗口定位：按进程名 / 标题枚举并命中 EVE 窗口
-│   ├── capture.py          # 画面捕获：mss 按窗口矩形抓取
-│   ├── region_selector.py  # 区域选择：透明遮罩层 + 鼠标框选
-│   ├── detector.py         # 红名识别：HSV 阈值 + 形态学 + 轮廓 + 时序确认
-│   └── alerter.py          # 警报：winsound 播放 + 冷却防抖
+│   ├── window_locator.py   # 窗口定位：按进程名 / 标题命中 + 最小化检测
+│   ├── capture.py          # 画面捕获：PrintWindow 窗口内容 + mss 屏幕回退
+│   ├── region_selector.py  # 区域选择：ROI 坐标归一化与换算
+│   ├── detector.py         # 目标识别：多颜色阈值 + 连通域 + 图标几何筛选 + 名字验证 + 时序确认
+│   ├── colors.py           # 12 种 EVE 总览颜色预设与识别程度换算
+│   ├── alerter.py          # 警报：winsound 连续循环播放 / 停止
+│   ├── config.py           # 配置读写：默认值深度合并
+│   └── logger.py           # 日志：滚动文件 + 控制台，级别可配置
 ├── ui/
-│   ├── overlay.py          # 框选遮罩窗口（透明置顶）
-│   └── panel.py            # 控制面板：启动 / 停止 / 校准 / 音量
+│   ├── panel.py            # 控制面板：目标选择 / 预览内框选 / 监控线程 / 颜色选择 / 预警暂停 / 独立预览
+│   ├── preview.py          # 自动适应预览控件（预览内拖拽框选）
+│   └── window_picker.py    # 目标程序选择对话框
+├── tests/                  # 单元测试（pytest）
+├── docs/                   # 技术方案与开发文档
 └── assets/
-    └── alert.wav           # 预设警报音</code></pre>
+    ├── alert.wav           # 预设警报音
+    ├── logo.png            # 应用图标（PNG）
+    └── logo.svg            # 应用图标（SVG）</code></pre>
       <p class="figure-caption"><strong>图 3：工程目录结构。</strong><span>core 层无 UI 依赖，detector 可独立做准确率与延迟的基准测试。</span></p>
     </section>
 
@@ -348,9 +355,9 @@ flowchart LR
           <tbody>
             <tr><td>P0</td><td>窗口定位 + 捕获 + 实时预览</td><td>能锁定 EVE 窗口并流畅显示捕获画面，位置无偏移。</td></tr>
             <tr><td>P1</td><td>区域选择 + 配置持久化</td><td>可框选 ROI，重启后坐标仍正确、跨分辨率不漂移。</td></tr>
-            <tr><td>P2</td><td>红名识别 + 颜色校准器</td><td>内置取样器与阈值滑动条，识别准确率 ≥ 90%。</td></tr>
-            <tr><td>P3</td><td>警报触发 + 防抖</td><td>命中即响，带冷却防抖，响应延迟 ≤ 300 ms。</td></tr>
-            <tr><td>P4</td><td>性能优化 + 多分辨率适配 + 打包</td><td>低功耗运行，输出免安装 exe，Win10/11 与主流分辨率验证通过。</td></tr>
+            <tr><td>P2</td><td>目标识别 + 颜色选择</td><td>12 色预设勾选 + 识别程度滑块（固定档位），识别准确率 ≥ 90%。</td></tr>
+            <tr><td>P3</td><td>警报触发 + 连续播报</td><td>命中即循环警报直到目标消失（无冷却），响应延迟 ≤ 300 ms。</td></tr>
+            <tr><td>P4</td><td>性能优化 + 多分辨率适配 + 打包</td><td>低功耗运行（默认 6 FPS）、面板自由缩放，输出免安装 exe，Win10/11 与主流分辨率验证通过。</td></tr>
           </tbody>
         </table>
       </div>

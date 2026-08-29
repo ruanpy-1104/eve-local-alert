@@ -14,7 +14,7 @@
 ### 1.2 安装依赖
 
 ```powershell
-cd "d:\Code\EVE Alert\eve-alert"
+cd "d:\Code\EVE Alert"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -59,7 +59,7 @@ pip install -r requirements.txt
     "sound_file": "assets/alert.wav"
   },
   "loop": {
-    "fps": 12
+    "fps": 6
   },
   "logging": {
     "level": "info",
@@ -81,7 +81,7 @@ pip install -r requirements.txt
 | `detection.colors` | string[] | 4 色 | 启用的警报颜色键（见 `core/colors.py` 的 `EVE_COLORS`）。 |
 | `detection.strictness` | int | 50 | 识别程度 0（宽松）~ 100（严格）。 |
 | `alert.sound_file` | string | `"assets/alert.wav"` | 警报音相对项目根路径；缺失时回退系统蜂鸣。 |
-| `loop.fps` | int | 12 | 检测循环帧率。 |
+| `loop.fps` | int | 6 | 检测循环帧率（越低 CPU 占用越低）。 |
 | `logging.level` | string | `"info"` | 日志级别：debug / info / warning / error / critical。 |
 | `logging.file` | string | `"logs/eve-alert.log"` | 日志文件相对路径（项目根基准；日志目录已 gitignore）。 |
 
@@ -318,6 +318,8 @@ function detect(frame_bgr):
 - 工作线程独立完成「捕获 → 检测 → 警报」，通过 Qt 信号上报状态 / 预览帧。
 - **最小化降级：** 目标窗口最小化（`IsIconic`）时暂停捕获并停止警报，经状态信号提示「目标窗口已最小化，无法监控，请恢复窗口」，恢复后自动继续——监控流程不被中断。
 - **竞态处理：** 手动停止监控时由面板置停止标志并等待线程退出，`run()` 仅在自然退出时发送「已停止」信号，避免手动停止与自然结束竞态覆盖状态。
+- **预警暂停：** 面板「暂停预警」按钮（checkable）经线程安全的 `set_paused()` 置位。暂停期间即使命中也不播放警报；红名离开（未命中）后工作线程自动清除暂停并发出 `alert_paused(False)`，面板同步复位按钮，下次命中恢复报警。
+- **独立预览窗口（`PreviewDialog`）：** 与监控线程独立的另一套捕获 + 检测循环（10 FPS 定时器），在独立窗口叠加识别框并显示命中状态 / FPS；检测参数变化时自动重建 `Detector` 保持与配置一致。窗口非模态，可保留在旁同时操作主面板。
 - 预览帧在捕获成功后经信号发送；捕获失败发 `None` 触发占位提示。
 
 ---
@@ -327,8 +329,10 @@ function detect(frame_bgr):
 取代早期「取样器 + 阈值滑动条」的校准器，改为**预设颜色勾选 + 识别程度滑块**，降低调参门槛：
 
 1. **色块勾选：** 展示 12 种 EVE 总览颜色色块（不显示名字），玩家多选需要警报的颜色，默认勾选红 / 橙红 / 橙 / 灰白。
-2. **识别程度滑块：** 0（宽松）~ 100（严格），按比例线性插值色相带宽与饱和度 / 明度下限（见 `core/colors.py`）。收到误报往严格调，漏报往宽松调。
+2. **识别程度滑块：** 0（宽松）~ 100（严格）的**固定档位 0 / 25 / 50 / 75 / 100**（拖动时自动吸附），按比例线性插值色相带宽与饱和度 / 明度下限（见 `core/colors.py`）。收到误报往严格调，漏报往宽松调。
 3. **应用并保存：** 将 `detection.colors` 与 `detection.strictness` 写回 `config.json`。
+
+> 颜色选择对话框不再内嵌实时预览：预览能力已移至主面板「预览」按钮的独立窗口（`PreviewDialog`），颜色选择只负责配置项。
 
 ---
 
@@ -391,4 +395,4 @@ nuitka --standalone --enable-plugin=pyside6 --windows-console-mode=disable `
 | P1 | 区域选择 + 配置持久化 | `ui/preview.py`（预览内框选）、`core/region_selector.py`、`core/config.py` | ✅ |
 | P2 | 目标识别 + 颜色选择 | `core/detector.py`、`core/colors.py`、`ui/panel.py`（颜色选择对话框） | ✅ |
 | P3 | 连续警报 + 最小化降级 | `core/alerter.py`、`ui/panel.py`（MonitorWorker） | ✅ |
-| P4 | 性能优化 + 面板等比缩放 + 打包 | `ui/panel.py`（等比布局）、`requirements.txt` | ✅ |
+| P4 | 性能优化 + 面板自由缩放 + 打包 | `ui/panel.py`、`requirements.txt` | ✅ |

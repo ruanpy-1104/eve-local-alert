@@ -117,7 +117,8 @@ class TestSelection:
         assert results[0] == expected
         assert expected.width() > 0 and expected.height() > 0
 
-    def test_tiny_drag_ignored(self, app):
+    def test_tiny_drag_emits_minimum_selection(self, app):
+        """最小 1px 微拖视为有效选区（支持 1×1 像素选区）。"""
         pv = PreviewWidget()
         pv.resize(400, 300)
         pv.set_image(_make_image(200, 100))
@@ -127,7 +128,8 @@ class TestSelection:
         pv.selection_finished.connect(results.append)
         QTest.mousePress(pv, Qt.LeftButton, Qt.NoModifier, QPoint(110, 110))
         QTest.mouseRelease(pv, Qt.LeftButton, Qt.NoModifier, QPoint(111, 110))
-        assert results == []  # 1px 微拖不视为选区
+        assert len(results) == 1  # 1px 微拖视为 1×1 选区
+        assert results[0].width() >= 1 and results[0].height() >= 1
 
     def test_drag_beyond_edge_clamps(self, app):
         """拖拽超出预览边界：选区吸附并对齐图像边缘。"""

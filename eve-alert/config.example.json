@@ -10,8 +10,6 @@
     "height": 0.40
   },
   "detection": {
-    "min_area": 80,
-    "min_aspect_ratio": 1.5,
     "confirm_frames": 3,
     "downscale": 2,
     "colors": [

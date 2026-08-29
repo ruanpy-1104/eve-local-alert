@@ -38,7 +38,7 @@ class TestConfig:
         # 项目自带的 config.json 必须可读且完整（阈值等用户可调值不在此断言）
         cfg = ConfigManager("config.json")
         assert 0 <= cfg.data["detection"]["strictness"] <= 100
-        assert 0 < cfg.data["detection"]["min_area"]
+        assert cfg.data["detection"]["confirm_frames"] > 0
         assert cfg.data["roi"]["width"] > 0
 
     def test_default_alert_colors(self):

@@ -4,7 +4,7 @@
 - 启动引导：选择目标程序 -> 在预览画面中框选监控区域 -> 校准/监控；
 - 区域选择在控制面板的预览画面内完成（不再在被监控程序界面遮罩框选）；
 - 预览画面自动适应控件尺寸，无需手动缩放；
-- 启动 / 停止监控、实时预览、颜色选择（色块 + 识别程度）。
+- 启动 / 停止预警、实时预览、颜色选择（色块 + 识别程度）。
 """
 from __future__ import annotations
 
@@ -55,15 +55,27 @@ class MonitorWorker(QThread):
     preview = Signal(object)  # BGR 预览帧（numpy ndarray）
     status = Signal(str)      # 状态文本
     error = Signal(str)       # 致命错误
+    alert_paused = Signal(bool)  # 播报暂停状态：True=已暂停，False=红名离开自动恢复
 
     def __init__(self, config: ConfigManager, root_dir: Path, parent=None):
         super().__init__(parent)
         self._config = config
         self._root = root_dir
         self._stop = threading.Event()
+        self._paused = threading.Event()  # 播报暂停：命中不报警，红名离开自动恢复
 
     def stop(self) -> None:
         self._stop.set()
+
+    def set_paused(self, paused: bool) -> None:
+        """设置播报暂停状态（UI 线程调用，工作线程下一帧生效）。"""
+        if paused:
+            self._paused.set()
+        else:
+            self._paused.clear()
+
+    def is_paused(self) -> bool:
+        return self._paused.is_set()
 
     def run(self) -> None:
         try:
@@ -132,16 +144,27 @@ class MonitorWorker(QThread):
                     time.sleep(interval)
                     continue
 
-                # 连续警报：识别到即持续播放，未识别立即停止（无冷却）
-                if detector.detect(frame):
-                    if not alerting:
+                # 连续警报：识别到即持续播放，未识别立即停止（无冷却）。
+                # 播报暂停时：即使命中也不报警；红名离开（未命中）后自动恢复预警。
+                hit = detector.detect(frame)
+                if hit:
+                    if not alerting and not self._paused.is_set():
                         alerting = True
                         alerter.start()
                         hit_count += 1
                         self.detected.emit()
-                elif alerting:
-                    alerting = False
-                    alerter.stop()
+                    elif alerting and self._paused.is_set():
+                        # 用户暂停时警报仍在播放中 → 立即停止
+                        alerting = False
+                        alerter.stop()
+                elif alerting or self._paused.is_set():
+                    if alerting:
+                        alerting = False
+                        alerter.stop()
+                    if self._paused.is_set():
+                        # 红名离开：自动恢复预警，下次命中重新报警
+                        self._paused.clear()
+                        self.alert_paused.emit(False)
 
                 # 预览叠加检测框，实时反馈识别结果（绿框 = 检测到目标颜色）
                 vis = frame
@@ -238,6 +261,8 @@ class ColorPickerDialog(QDialog):
         strict_row.addWidget(QLabel("宽松"))
         self.strictness_slider = QSlider(Qt.Horizontal)
         self.strictness_slider.setRange(0, 100)
+        self.strictness_slider.setSingleStep(25)
+        self.strictness_slider.setPageStep(25)
         self.strictness_slider.setValue(int(self.config.data["detection"].get("strictness", 50)))
         self.strictness_slider.setTickPosition(QSlider.TicksBelow)
         self.strictness_slider.setTickInterval(25)
@@ -296,7 +321,14 @@ class ColorPickerDialog(QDialog):
         det["downscale"] = 1  # 预览与画面一一对应
         self._detector = Detector(**det)
 
-    def _on_strictness_changed(self, _value: int) -> None:
+    def _on_strictness_changed(self, value: int) -> None:
+        # 固定档位 0/25/50/75/100：拖动时吸附到最近档位
+        snapped = round(value / 25) * 25
+        if snapped != value:
+            self.strictness_slider.blockSignals(True)
+            self.strictness_slider.setValue(snapped)
+            self.strictness_slider.blockSignals(False)
+            value = snapped
         self._update_strictness_label()
         self._rebuild_detector()
 
@@ -369,7 +401,7 @@ class ControlPanel(QWidget):
         self._resizing = False          # 防止 resizeEvent 递归
         self._controls_cache = 170      # 控件总高（布局生效后测量校准）
 
-        self.setWindowTitle("EVE Alert 控制面板")
+        self.setWindowTitle("EVE Local Alert")
         # 注意：面板不做置顶，不改变其他窗口的 Z 序或前台状态，避免影响其他应用操作。
         self.setMinimumSize(420, 460)
         self.resize(520, 520)
@@ -392,9 +424,20 @@ class ControlPanel(QWidget):
         root.addWidget(self.preview, stretch=1)
 
         btn_row = QHBoxLayout()
-        self.start_btn = QPushButton("开始监控")
+        self.start_btn = QPushButton("开始预警")
+        self.pause_btn = QPushButton("暂停预警")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.setToolTip("点击后即使命中也不报警；红名离开后自动恢复预警")
         self.target_btn = QPushButton("选择目标程序")
+        # 预警操作行：按钮与字体略微增大
+        row_font = self.start_btn.font()
+        row_font.setPointSize(row_font.pointSize() + 2)
+        for btn in (self.start_btn, self.pause_btn, self.target_btn):
+            btn.setFont(row_font)
+            btn.setMinimumHeight(40)
         btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.pause_btn)
         btn_row.addWidget(self.target_btn)
         root.addLayout(btn_row)
 
@@ -407,15 +450,10 @@ class ControlPanel(QWidget):
         root.addLayout(opt_row)
 
         self.start_btn.clicked.connect(self._toggle_monitor)
+        self.pause_btn.toggled.connect(self._on_pause_toggled)
         self.target_btn.clicked.connect(self._select_target)
         self.color_btn.clicked.connect(self._open_color_picker)
         self.test_btn.clicked.connect(self._test_alert)
-
-    def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key_Escape and self._sel_timer is not None:
-            self._end_selection("已取消框选")
-            return
-        super().keyPressEvent(event)
 
     def resizeEvent(self, event) -> None:
         """面板拉伸固定比例：高度 = 控件 + 预览(预览宽度 / 监控程序宽高比)。
@@ -534,7 +572,7 @@ class ControlPanel(QWidget):
         self._sel_timer.start()
         self.preview.enable_selection(True)
         self.preview.setFocus()
-        self.status_label.setText("在预览画面中拖动鼠标框选监控区域，Esc 取消")
+        self.status_label.setText("在预览画面中拖动鼠标框选监控区域")
         self._sel_tick()
 
     def _sel_tick(self) -> None:
@@ -630,8 +668,15 @@ class ControlPanel(QWidget):
         self._worker.status.connect(self.status_label.setText)
         self._worker.detected.connect(self._on_detected)
         self._worker.error.connect(self._on_error)
+        self._worker.alert_paused.connect(self._on_alert_paused)
         self._worker.start()
-        self.start_btn.setText("停止监控")
+        self.start_btn.setText("停止预警")
+        # 每次启动监控重置播报暂停状态
+        self.pause_btn.blockSignals(True)
+        self.pause_btn.setChecked(False)
+        self.pause_btn.setText("暂停预警")
+        self.pause_btn.blockSignals(False)
+        self.pause_btn.setEnabled(True)
         self.status_label.setText("正在定位窗口...")
 
     def _stop_monitor(self) -> None:
@@ -639,8 +684,9 @@ class ControlPanel(QWidget):
             self._worker.stop()
             self._worker.wait(2000)
             self._worker = None
-        self.start_btn.setText("开始监控")
-        self.status_label.setText("已停止监控")
+        self.start_btn.setText("开始预警")
+        self.pause_btn.setEnabled(False)
+        self.status_label.setText("已停止预警")
 
     def _on_preview(self, frame) -> None:
         if frame is None:
@@ -657,7 +703,33 @@ class ControlPanel(QWidget):
     def _on_error(self, message: str) -> None:
         self.status_label.setStyleSheet("color:#e67e22;font-weight:bold;")
         self.status_label.setText(f"错误：{message}")
-        self.start_btn.setText("开始监控")
+        self.start_btn.setText("开始预警")
+
+    # ---- 播报暂停 ----
+    def _on_pause_toggled(self, checked: bool) -> None:
+        """用户点击「暂停预警」：即使命中也不报警，红名离开后自动恢复。"""
+        if self._worker is None or not self._worker.isRunning():
+            # 未监控时忽略（按钮已禁用，双保险）
+            self.pause_btn.blockSignals(True)
+            self.pause_btn.setChecked(False)
+            self.pause_btn.setText("暂停预警")
+            self.pause_btn.blockSignals(False)
+            return
+        self._worker.set_paused(checked)
+        self.pause_btn.setText("预警已暂停" if checked else "暂停预警")
+        if checked:
+            self.status_label.setText("预警已暂停：命中不再报警，红名离开后自动恢复")
+
+    def _on_alert_paused(self, paused: bool) -> None:
+        """工作线程同步暂停状态（红名离开自动恢复时取消按钮勾选）。"""
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self.pause_btn.blockSignals(True)
+        self.pause_btn.setChecked(paused)
+        self.pause_btn.setText("预警已暂停" if paused else "暂停预警")
+        self.pause_btn.blockSignals(False)
+        if not paused:
+            self.status_label.setText("红名已离开，预警已自动恢复")
 
     def _restore_status_style(self) -> None:
         self.status_label.setStyleSheet("")

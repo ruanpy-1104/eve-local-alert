@@ -143,14 +143,31 @@ class Detector:
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         return mask, hsv[..., 2]
 
+    def _has_left_content(self, mask: np.ndarray, x: int, y: int, w: int, h: int) -> bool:
+        """判断该色块**同行左侧**是否已有同色内容。
+
+        名字文字是一串：每个字左侧必有前一个字或图标；而真正的阵营图标位于行首，
+        左侧是空白。因此白色/灰白检测时，左侧有内容的色块应判为「名字文字」而非图标。
+        """
+        img_h, img_w = mask.shape
+        x0 = max(0, x - max(6, int(3 * w)))
+        y0 = max(0, y - h // 2)
+        y1 = min(img_h, y + h + h // 2)
+        if x0 >= x or y0 >= y1:
+            return False
+        return bool(mask[y0:y1, x0:x].any())
+
     def _candidate_boxes(
-        self, mask: np.ndarray, v_chan: np.ndarray, min_fill: float, gray_v_max: float | None = None
+        self, mask: np.ndarray, v_chan: np.ndarray, min_fill: float,
+        gray_v_max: float | None = None, left_clear: bool = False,
     ) -> list[tuple[int, int, int, int]]:
         """在单个颜色掩码上做连通域 + 几何筛选 + 两级名字验证。
 
         :param min_fill: 本次检测使用的实心填充率下限（彩色与灰白不同）。
         :param gray_v_max: 灰白专用：连通域**平均明度**上限，超过则判为白色（名字文字 /
             图标中的白色高光）而剔除；其它颜色为 None 不启用。
+        :param left_clear: 灰白专用：色块**同行左侧若已有同色内容**则判为名字文字而剔除，
+            用于抑制极小字体名字形成的紧凑色块。
         名字验证采取**两级自适应**：先收集通过几何筛选的色块，再检查各自右侧是否有
         对齐的明亮名字文字。
         - 若帧内**存在**某图标带名字：说明是「图标 + 名字」的正常总览，只保留带名字
@@ -173,6 +190,9 @@ class Detector:
                 continue
             # 灰白：目标须是「灰」而非「白」，用平均明度剔除白色文字 / 高光
             if gray_v_max is not None and v_chan[labels == i].mean() > gray_v_max:
+                continue
+            # 灰白：同行左侧已有同色内容 → 是名字文字而非行首图标
+            if left_clear and self._has_left_content(mask, x, y, w, h):
                 continue
             candidates.append((x, y, w, h))
             if self._has_aligned_name(v_chan, x, y, w, h, img_h, w_max):
@@ -203,7 +223,9 @@ class Detector:
             boxes += self._candidate_boxes(m, v, self.min_fill)
         if gray:
             m, v = self._mask_for(frame_bgr, gray)
-            boxes += self._candidate_boxes(m, v, self.achromatic_fill, gray_v_max=self.gray_v_max)
+            boxes += self._candidate_boxes(
+                m, v, self.achromatic_fill, gray_v_max=self.gray_v_max, left_clear=True
+            )
         return boxes
 
     def has_red(self, frame_bgr: np.ndarray) -> bool:

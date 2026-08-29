@@ -265,6 +265,18 @@ class TestGrayWhiteSeparation:
             cv2.rectangle(f, (56 + i * 6, 124), (60 + i * 6, 136), WHITE, -1)
         assert len(d.red_boxes(f)) == 1
 
+    def test_tiny_gray_name_rejected_by_left_context(self):
+        # 极小字体名字渲染成「灰」字串（平均明度落在灰区间、绕开灰白上限）：
+        # 靠「同行左侧已有同色内容」判据剔除；行首图标（左侧空）仍命中。
+        d = Detector(colors=["gray_white"])
+        f = _frame()
+        cv2.rectangle(f, (20, 60), (49, 89), GRAY, -1)          # 行首灰图标
+        for i in range(6):                                      # 紧邻的灰色名字字串
+            cv2.rectangle(f, (56 + i * 16, 62), (70 + i * 16, 76), (160, 160, 160), -1)
+        boxes = d.red_boxes(f)
+        assert len(boxes) == 1
+        assert boxes[0][0] < 55  # 仅命中行首图标
+
 
 class TestStrictness:
     """识别程度：宽松包含更多，严格判定更苛刻。"""

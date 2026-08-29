@@ -111,7 +111,7 @@ class PreviewWidget(QWidget):
             self._drag_current = None
             if a is not None and b is not None:
                 rect = QRect(QPoint(*a), QPoint(*b)).normalized()
-                if rect.width() >= 2 and rect.height() >= 2:
+                if rect.width() >= 1 and rect.height() >= 1:  # 最小支持 1x1 像素
                     self._selection = rect
                     self.selection_finished.emit(rect)
             self.update()
@@ -181,10 +181,3 @@ class PreviewWidget(QWidget):
         )
         painter.setPen(QPen(SEL_BORDER, 2))
         painter.drawRect(sel)
-        # 选区尺寸标注
-        painter.setPen(SEL_BORDER)
-        painter.drawText(
-            sel.adjusted(0, -20, 0, 0),
-            Qt.AlignTop | Qt.AlignHCenter,
-            f"{sel_img.width()} x {sel_img.height()}",
-        )

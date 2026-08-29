@@ -39,7 +39,7 @@ class TargetPickerDialog(QDialog):
             if pid:
                 self._exclude.add(pid)
 
-        self.setWindowTitle("选择要监控的程序")
+        self.setWindowTitle("选择程序")
         self.setMinimumSize(640, 460)
         self._build_ui()
         self.refresh()
@@ -49,7 +49,7 @@ class TargetPickerDialog(QDialog):
         root = QVBoxLayout(self)
 
         hint = QLabel(
-            "请选择需要监控的应用程序窗口（例如 EVE 客户端）：\n"
+            "请选择应用程序窗口：\n"
             "如果目标程序尚未打开，请先启动它，再点击「刷新列表」。"
         )
         hint.setWordWrap(True)

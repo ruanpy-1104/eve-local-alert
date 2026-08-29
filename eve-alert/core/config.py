@@ -26,7 +26,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "strictness": 50,
     },
     "alert": {"sound_file": "assets/alert.wav"},
-    "loop": {"fps": 12},
+    "loop": {"fps": 6},
     "logging": {"level": "info", "file": "logs/eve-alert.log"},
 }
 

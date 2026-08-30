@@ -90,13 +90,24 @@ def run_ui(config_path: Path) -> int:
     from PySide6.QtWidgets import QApplication
 
     from ui.panel import ControlPanel
+    from ui.theme import apply
 
     app = QApplication(sys.argv)
+    # 统一深色主题：Fusion 风格 + 全局 QSS + 调色板，不随 Windows 深浅色模式切换而变化
+    apply(app)
+    app.setWindowIcon(_app_icon())
     panel = ControlPanel(config_path)
     panel.show()
     # 启动引导：选择目标程序 -> 框选监控区域
     QTimer.singleShot(0, panel.guide_target_selection)
     return app.exec()
+
+
+def _app_icon():
+    from PySide6.QtGui import QIcon
+
+    icon = QIcon(str(CONFIG_PATH.parent / "assets" / "logo.png"))
+    return icon if not icon.isNull() else QIcon()
 
 
 def _install_crash_logging() -> None:

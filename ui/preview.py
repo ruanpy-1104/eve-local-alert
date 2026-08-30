@@ -14,10 +14,12 @@ from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-DIM_COLOR = QColor(0, 0, 0, 120)          # 选区外暗化
-SEL_BORDER = QColor(46, 204, 113, 255)    # 选区描边
-BACKGROUND = QColor(0x1E, 0x1E, 0x1E)
-PLACEHOLDER_COLOR = QColor(0x88, 0x88, 0x88)
+from ui import theme
+
+DIM_COLOR = QColor(0, 0, 0, 120)             # 选区外暗化
+SEL_BORDER = QColor(theme.SUCCESS)           # 选区描边（主题成功绿）
+BACKGROUND = QColor(theme.SCREEN)            # 预览画面底（深空屏）
+PLACEHOLDER_COLOR = QColor(theme.MUTED)      # 占位提示文字
 
 
 class PreviewWidget(QWidget):

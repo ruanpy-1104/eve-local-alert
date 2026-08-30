@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.window_locator import WindowInfo, WindowLocator
+from ui import theme
 
 
 class TargetPickerDialog(QDialog):
@@ -39,33 +40,42 @@ class TargetPickerDialog(QDialog):
             if pid:
                 self._exclude.add(pid)
 
-        self.setWindowTitle("选择程序")
-        self.setMinimumSize(640, 460)
+        self.setWindowTitle("选择程序 · 监控目标")
+        self.setFixedSize(800, 600)
         self._build_ui()
         self.refresh()
 
     # ---- UI ----
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(12)
 
         hint = QLabel(
             "请选择应用程序窗口：\n"
             "如果目标程序尚未打开，请先启动它，再点击「刷新列表」。"
         )
+        hint.setObjectName("subtitleLabel")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
         self.list = QListWidget()
+        self.list.setObjectName("targetList")
         self.list.setAlternatingRowColors(True)
         root.addWidget(self.list, stretch=1)
 
         self.status_label = QLabel("")
+        self.status_label.setObjectName("statusLabel")
         root.addWidget(self.status_label)
 
         row = QHBoxLayout()
+        row.setSpacing(8)
         self.refresh_btn = QPushButton("刷新列表")
         self.ok_btn = QPushButton("确认选择")
+        self.ok_btn.setProperty("role", theme.ROLE_PRIMARY)
         self.cancel_btn = QPushButton("取消")
+        for btn in (self.refresh_btn, self.ok_btn, self.cancel_btn):
+            btn.setMinimumHeight(36)
         row.addWidget(self.refresh_btn)
         row.addStretch()
         row.addWidget(self.ok_btn)

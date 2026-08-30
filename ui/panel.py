@@ -14,14 +14,15 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRect, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QImage
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter
 from PySide6.QtWidgets import (
     QDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -35,6 +36,7 @@ from core.detector import Detector
 from core.logger import get_logger
 from core.region_selector import ROI
 from core.window_locator import WindowInfo, WindowLocator, is_minimized
+from ui import theme
 from ui.preview import PreviewWidget
 from ui.window_picker import TargetPickerDialog
 
@@ -42,6 +44,48 @@ logger = get_logger(__name__)
 
 REFRESH_GEOMETRY_EVERY = 30  # 每 N 帧重新定位窗口，跟随移动 / 缩放
 SELECTION_INTERVAL_MS = 150  # 框选模式下全窗口预览刷新间隔
+
+# 识别程度档位 -> 描述文案（0/25/50/75/100 各档有独立描述）
+_STRICT_LEVELS = {0: "宽松", 25: "较宽松", 50: "适中", 75: "较严格", 100: "严格"}
+
+
+class _StrictScale(QWidget):
+    """识别程度滑块下方的数字刻度（0/25/50/75/100）。
+
+    直接按滑轨分数位置绘制，避免布局错位：左右各留出手柄半宽内边距，
+    使两端刻度与滑轨端点、中间刻度与滑轨 25%/50%/75% 分位精确对齐。
+    """
+
+    _VALUES = (0, 25, 50, 75, 100)
+    _INSET = 8  # 滑块手柄半宽，刻度端点对齐到滑轨端点
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(20)
+        self.setMinimumWidth(220)
+        # 水平撑满所在列（与滑块同宽），垂直固定
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setPen(QColor(theme.MUTED))
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        width = self.width()
+        track = width - 2 * self._INSET
+        box = 28.0
+        for v in self._VALUES:
+            x = self._INSET + v / 100.0 * track
+            if v == 0:
+                rect = QRectF(0, 0, box, self.height())
+                painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, str(v))
+            elif v == 100:
+                rect = QRectF(width - box, 0, box, self.height())
+                painter.drawText(rect, Qt.AlignRight | Qt.AlignVCenter, str(v))
+            else:
+                rect = QRectF(x - box / 2, 0, box, self.height())
+                painter.drawText(rect, Qt.AlignHCenter | Qt.AlignVCenter, str(v))
 
 
 def bgr_to_qimage(frame: np.ndarray) -> QImage:
@@ -200,20 +244,27 @@ class ColorPickerDialog(QDialog):
         super().__init__(parent)
         self.config = config
 
-        self.setWindowTitle("颜色选择")
-        self.setFixedSize(480, 380)
+        self.setWindowTitle("颜色选择 · 警报颜色")
+        self.setFixedSize(520, 430)
         self._build_ui()
 
     # ---- UI ----
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(14)
 
         self.status_label = QLabel("勾选需要警报的颜色\n误报时往严格调，漏报时往宽松调")
+        self.status_label.setObjectName("descriptionLabel")
         root.addWidget(self.status_label)
 
-        # ---- EVE 总览警报颜色选择（仅色块，勾选显示对勾） ----
+        # ---- 警报颜色（色块，勾选显示对勾） ----
+        section_color = QLabel("警报颜色")
+        section_color.setObjectName("sectionLabel")
+        root.addWidget(section_color)
         palette_grid = QGridLayout()
-        palette_grid.setSpacing(6)
+        palette_grid.setHorizontalSpacing(10)
+        palette_grid.setVerticalSpacing(10)
         self._color_buttons: dict[str, QPushButton] = {}
         for i, name in enumerate(COLOR_ORDER):
             info = EVE_COLORS[name]
@@ -222,43 +273,62 @@ class ColorPickerDialog(QDialog):
             text_color = "black" if luminance > 150 else "white"
             btn = QPushButton("")
             btn.setCheckable(True)
-            btn.setFixedSize(58, 38)
+            btn.setFixedSize(60, 40)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setToolTip(f"{info['label']}（{name}）")
             btn.setStyleSheet(
                 f"QPushButton {{ background-color: rgb({r},{g},{b}); color: {text_color};"
-                f" border: 2px solid #666; border-radius: 4px; font-weight: bold; }}"
-                f"QPushButton:checked {{ border: 3px solid #4CAF50; }}"
+                f" border: 2px solid {theme.BORDER}; border-radius: 6px; font-weight: bold; }}"
+                f"QPushButton:checked {{ border: 3px solid {theme.SUCCESS}; }}"
             )
             btn.clicked.connect(lambda _checked, n=name: self._on_color_toggled(n))
             palette_grid.addWidget(btn, i // 6, i % 6)
             self._color_buttons[name] = btn
-        root.addLayout(palette_grid)
+        palette_row = QHBoxLayout()
+        palette_row.addStretch()
+        palette_row.addLayout(palette_grid)
+        palette_row.addStretch()
+        root.addLayout(palette_row)
         self._sync_colors_from_config()
         self._refresh_swatch_marks()
 
-        # ---- 识别程度（左宽松 ~ 右严格） ----
-        strict_row = QHBoxLayout()
-        strict_row.addWidget(QLabel("宽松"))
+        # ---- 识别程度（左宽松 ~ 右严格，刻度紧贴滑块下方） ----
+        section_strict = QLabel("识别程度")
+        section_strict.setObjectName("sectionLabel")
+        root.addWidget(section_strict)
+        # 网格布局：第一行 宽松/滑块/严格/数值 与滑块垂直对齐，第二行刻度只在滑块列下方
+        strict_grid = QGridLayout()
+        strict_grid.setHorizontalSpacing(10)
+        strict_grid.setVerticalSpacing(3)
+        loose_lbl = QLabel("宽松")
+        strict_lbl = QLabel("严格")
+        loose_lbl.setObjectName("subtitleLabel")
+        strict_lbl.setObjectName("subtitleLabel")
         self.strictness_slider = QSlider(Qt.Horizontal)
         self.strictness_slider.setRange(0, 100)
         self.strictness_slider.setSingleStep(25)
         self.strictness_slider.setPageStep(25)
         self.strictness_slider.setValue(int(self.config.data["detection"].get("strictness", 50)))
-        self.strictness_slider.setTickPosition(QSlider.TicksBelow)
-        self.strictness_slider.setTickInterval(25)
         self.strictness_slider.valueChanged.connect(self._on_strictness_changed)
-        strict_row.addWidget(self.strictness_slider, stretch=1)
-        strict_row.addWidget(QLabel("严格"))
         self.strictness_value = QLabel()
-        self.strictness_value.setMinimumWidth(64)
-        strict_row.addWidget(self.strictness_value)
-        root.addLayout(strict_row)
+        self.strictness_value.setMinimumWidth(72)
+        self.strictness_value.setAlignment(Qt.AlignCenter)
+        strict_grid.addWidget(loose_lbl, 0, 0)
+        strict_grid.addWidget(self.strictness_slider, 0, 1)
+        strict_grid.addWidget(strict_lbl, 0, 2)
+        strict_grid.addWidget(self.strictness_value, 0, 3)
+        strict_grid.setColumnStretch(1, 1)  # 滑块列占满剩余空间
+        strict_grid.addWidget(_StrictScale(), 1, 1)  # 刻度与滑块同列，居中于滑轨下方
+        root.addLayout(strict_grid)
         self._update_strictness_label()
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
         self.apply_btn = QPushButton("应用")
+        self.apply_btn.setProperty("role", theme.ROLE_PRIMARY)
         self.close_btn = QPushButton("关闭")
+        self.apply_btn.setMinimumHeight(36)
+        self.close_btn.setMinimumHeight(36)
         self.apply_btn.clicked.connect(self._apply)
         self.close_btn.clicked.connect(self.close)
         btn_row.addStretch()
@@ -286,12 +356,7 @@ class ColorPickerDialog(QDialog):
 
     def _update_strictness_label(self) -> None:
         value = self.strictness_slider.value()
-        if value <= 33:
-            level = "宽松"
-        elif value <= 66:
-            level = "适中"
-        else:
-            level = "严格"
+        level = _STRICT_LEVELS.get(value, "适中")
         self.strictness_value.setText(f"{value} · {level}")
 
     def _on_strictness_changed(self, value: int) -> None:
@@ -352,16 +417,20 @@ class PreviewDialog(QDialog):
     # ---- UI ----
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
 
         self.preview = PreviewWidget()
         self.preview.set_placeholder("等待画面（确保目标程序已打开）")
         root.addWidget(self.preview, stretch=1)
 
         self.status_label = QLabel("预览：绿色框为识别到的目标颜色")
+        self.status_label.setObjectName("statusLabel")
         root.addWidget(self.status_label)
 
         btn_row = QHBoxLayout()
         self.close_btn = QPushButton("关闭")
+        self.close_btn.setMinimumHeight(34)
         self.close_btn.clicked.connect(self.close)
         btn_row.addStretch()
         btn_row.addWidget(self.close_btn)
@@ -474,18 +543,26 @@ class ControlPanel(QWidget):
         self._controls_cache = 170      # 控件总高（布局生效后测量校准）
 
         self.setWindowTitle("EVE Local Alert")
+        self.setWindowIcon(self._app_icon())
         # 注意：面板不做置顶，不改变其他窗口的 Z 序或前台状态，避免影响其他应用操作。
         self.setMinimumSize(420, 460)
         self.resize(520, 520)
         self._build_ui()
+
+    def _app_icon(self) -> QIcon:
+        icon = QIcon(str(self._root / "assets" / "logo.png"))
+        return icon if not icon.isNull() else QIcon()
 
     # ---- UI ----
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         # 布局不约束窗口尺寸，由 resizeEvent 按监控程序比例等比控制
         root.setSizeConstraint(QVBoxLayout.SetNoConstraint)
+        root.setContentsMargins(16, 14, 16, 16)
+        root.setSpacing(12)
 
         self.status_label = QLabel("请选择要监控的目标程序")
+        self.status_label.setObjectName("statusLabel")
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
 
@@ -495,43 +572,48 @@ class ControlPanel(QWidget):
         self.preview.selection_finished.connect(self._on_selection_finished)
         root.addWidget(self.preview, stretch=1)
 
-        btn_row = QHBoxLayout()
+        # ---- 主操作行：开始预警 / 暂停预警 / 选择程序（三个等宽大按钮） ----
+        main_row = QHBoxLayout()
+        main_row.setSpacing(8)
         self.start_btn = QPushButton("开始预警")
+        self.start_btn.setProperty("role", theme.ROLE_PRIMARY)
         self.pause_btn = QPushButton("暂停预警")
         self.pause_btn.setCheckable(True)
         self.pause_btn.setEnabled(False)
         self.pause_btn.setToolTip("点击后即使命中也不报警；红名离开后自动恢复预警")
         self.target_btn = QPushButton("选择程序")
-        # 预警操作行：按钮与字体略微增大
+        # 主功能：更大字号 + 更高按钮，与次要功能拉开明显层次
         row_font = self.start_btn.font()
         row_font.setPointSize(row_font.pointSize() + 2)
         for btn in (self.start_btn, self.pause_btn, self.target_btn):
             btn.setFont(row_font)
-            btn.setMinimumHeight(40)
-        btn_row.addWidget(self.start_btn)
-        btn_row.addWidget(self.pause_btn)
-        btn_row.addWidget(self.target_btn)
-        root.addLayout(btn_row)
+            btn.setMinimumHeight(46)
+            main_row.addWidget(btn, stretch=1)  # 等宽排布
+        root.addLayout(main_row)
 
-        opt_row = QHBoxLayout()
+        # ---- 第二行：其他功能 + GitHub（末尾留白，便于后续扩展） ----
+        tool_row = QHBoxLayout()
+        tool_row.setSpacing(8)
         self.color_btn = QPushButton("颜色选择")
         self.preview_btn = QPushButton("预览")
         self.test_btn = QPushButton("测试警报音")
-        opt_row.addWidget(self.color_btn)
-        opt_row.addWidget(self.preview_btn)
-        opt_row.addWidget(self.test_btn)
-        opt_row.addStretch()
-        # 最右侧 GitHub 图标：点击打开项目仓库
+        # 次要功能统一固定宽度，左侧紧凑排布，避免按钮撑满整行
+        for btn in (self.color_btn, self.preview_btn, self.test_btn):
+            btn.setMinimumHeight(38)
+            btn.setFixedWidth(104)
+            tool_row.addWidget(btn)
+        # 与 GitHub 图标之间留出弹性空白（≥ 一个按钮宽度），方便后续追加新功能按钮
+        tool_row.addStretch(1)
         self.github_btn = QPushButton()
         self.github_btn.setIcon(QIcon(str(self._root / "assets" / "github.svg")))
         self.github_btn.setIconSize(QSize(20, 20))
-        self.github_btn.setFixedSize(28, 28)
-        self.github_btn.setFlat(True)
+        self.github_btn.setFixedSize(32, 32)
+        self.github_btn.setProperty("role", theme.ROLE_GHOST)
         self.github_btn.setToolTip("GitHub 仓库")
         self.github_btn.setCursor(Qt.PointingHandCursor)
         self.github_btn.clicked.connect(self._open_github)
-        opt_row.addWidget(self.github_btn)
-        root.addLayout(opt_row)
+        tool_row.addWidget(self.github_btn)
+        root.addLayout(tool_row)
 
         self.start_btn.clicked.connect(self._toggle_monitor)
         self.pause_btn.toggled.connect(self._on_pause_toggled)
@@ -771,13 +853,17 @@ class ControlPanel(QWidget):
         self.preview.set_image(bgr_to_qimage(frame))
 
     def _on_detected(self) -> None:
-        self.status_label.setStyleSheet("color:#e74c3c;font-weight:bold;")
+        self.status_label.setStyleSheet(
+            f"color:{theme.DANGER};font-weight:bold;font-size:13px;"
+        )
         self.status_label.setText("检测到目标颜色，正在警报！")
         QTimer.singleShot(1200, self._restore_status_style)
 
     def _on_error(self, message: str) -> None:
         logger.error("监控出错：%s", message)
-        self.status_label.setStyleSheet("color:#e67e22;font-weight:bold;")
+        self.status_label.setStyleSheet(
+            f"color:{theme.WARN};font-weight:bold;font-size:13px;"
+        )
         self.status_label.setText(f"错误：{message}")
         self.start_btn.setText("开始预警")
 

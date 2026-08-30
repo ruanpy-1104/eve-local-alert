@@ -369,8 +369,9 @@ function detect(frame_bgr):
 
 ```powershell
 pip install pyinstaller
-pyinstaller --noconsole --onefile --name eve-alert `
-  --add-data "assets;assets" --add-data "config.example.json;." main.py
+# 应用图标：assets/logo.ico 由 assets/logo.png 经 Pillow 生成（多尺寸），--icon 指定后嵌入 exe
+pyinstaller --noconsole --onefile --name eve-alert --icon assets/logo.ico `
+  --add-data "assets;assets" main.py
 ```
 
 ### 9.2 Nuitka

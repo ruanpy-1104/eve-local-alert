@@ -191,7 +191,7 @@ flowchart TD
             <tr><td>detector</td><td>目标识别</td><td>多颜色 HSV 阈值并集 + 连通域 + 图标几何筛选（面积自适应 / 长宽比 / 填充率）+ 两级名字验证 + 连续 N 帧时序确认。</td></tr>
             <tr><td>alerter</td><td>触发警报</td><td>winsound SND_LOOP 循环播放，识别到目标即持续警报直到目标消失（无冷却）；缺失回退 Beep。</td></tr>
             <tr><td>config</td><td>配置读写</td><td>本地 JSON 保存窗口标识、ROI、启用颜色与识别程度等；与默认值深度合并。</td></tr>
-            <tr><td>logger</td><td>日志记录</td><td>统一 logging：项目根 logs/ 滚动文件 + 控制台，级别可配置，覆盖生命周期事件与异常。</td></tr>
+            <tr><td>logger</td><td>日志记录</td><td>统一 logging：数据目录 logs/ 滚动文件（打包后 <code>%APPDATA%\eve-alert\logs</code>）+ 控制台，级别可配置，覆盖生命周期事件与异常。</td></tr>
           </tbody>
         </table>
       </div>
@@ -206,7 +206,7 @@ flowchart TD
       <h3>日志与运行诊断</h3>
       <p>工具内置统一日志（<code>core/logger.py</code>），<strong>仅记录异常 / 崩溃</strong>，保持日志简洁，便于事后排查闪退与致命错误：</p>
       <ul>
-        <li><strong>输出：</strong>项目根 <code>logs/eve-alert.log</code> 滚动文件（默认 2MB、保留 3 份）+ 控制台；级别与文件路径可经 <code>config.json</code> 的 <code>logging</code> 段调整，默认 <code>error</code>。</li>
+        <li><strong>输出：</strong>数据目录 <code>logs/eve-alert.log</code> 滚动文件（开发期项目根、打包后 <code>%APPDATA%\eve-alert</code>；默认 2MB、保留 3 份）+ 控制台；级别与文件路径可经 <code>config.json</code> 的 <code>logging</code> 段调整，默认 <code>error</code>。</li>
         <li><strong>格式：</strong><code>时间 | 级别 | 模块 | 消息</code>。</li>
         <li><strong>覆盖事件：</strong>监控线程异常（含 traceback）、未捕获异常导致的闪退（<code>sys.excepthook</code> 统一钩子）、警报播放失败等 ERROR 及以上事件；普通生命周期事件不记录。</li>
       </ul>

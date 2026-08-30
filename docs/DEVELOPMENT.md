@@ -35,7 +35,7 @@ pip install -r requirements.txt
 
 ## 2. 配置说明（config.json）
 
-配置为单一 JSON 文件，位于项目根目录，程序启动时读取。字段全部本地化，无任何网络项。配置缺失时程序自动使用默认值（`core/config.py` 的 `DEFAULT_CONFIG` 深度合并），模板见 `config.example.json`。
+配置为单一 JSON 文件：开发期位于项目根目录；打包后位于系统用户数据目录 `%APPDATA%\eve-alert\config.json`（见 `core/paths.py` 的 `app_dir()`）。程序启动时读取，字段全部本地化，无任何网络项。配置缺失时程序自动使用默认值（`core/config.py` 的 `DEFAULT_CONFIG` 深度合并），模板见 `config.example.json`。
 
 ```json
 {
@@ -83,7 +83,7 @@ pip install -r requirements.txt
 | `alert.sound_file` | string | `"assets/alert.wav"` | 警报音相对项目根路径；缺失时回退系统蜂鸣。 |
 | `loop.fps` | int | 6 | 检测循环帧率（越低 CPU 占用越低）。 |
 | `logging.level` | string | `"error"` | 日志级别：debug / info / warning / error / critical。 |
-| `logging.file` | string | `"logs/eve-alert.log"` | 日志文件相对路径（项目根基准；日志目录已 gitignore）。 |
+| `logging.file` | string | `"logs/eve-alert.log"` | 日志文件相对路径（相对数据目录 `app_dir()`；开发期为项目根，打包后为 `%APPDATA%\eve-alert`）。 |
 
 > 注意：图标的面积 / 长宽比 / 填充率等几何约束由 `Detector` 内部随下采样比例自适应，不再暴露为配置项；`confirm_frames` 与 `downscale` 仍为配置项。旧版 config.json 中的 `min_area` / `min_aspect_ratio` 会在加载时被自动剔除。
 
@@ -214,8 +214,8 @@ def get_logger(name=None) -> logging.Logger  # 取命名空间 logger（模块�
 ```
 
 - **仅记录异常 / 崩溃**：默认级别 `error`，只写 ERROR 及以上（含 traceback）——监控线程异常、未捕获异常导致的闪退（`main.py` 的 `sys.excepthook` 统一钩子）、警报播放失败等。普通生命周期事件不写日志，保持日志简洁。
-- 日志写入 `base_dir / log_file`（默认项目根 `logs/eve-alert.log`），超过 `max_bytes` 自动轮转保留 `backup_count` 份；日志目录不可写时降级为仅控制台，不中断程序。
-- 日志目录 `logs/` 已在 `.gitignore` 排除；`main.py` 启动时依 `config.json` 的 `logging` 段初始化（`level` 默认 `error`，也可调低到 warning/info/debug 排查）。
+- 日志写入 `base_dir / log_file`（`base_dir` 为数据目录 `app_dir()`：开发期项目根、打包后 `%APPDATA%\eve-alert`；默认文件 `logs/eve-alert.log`），超过 `max_bytes` 自动轮转保留 `backup_count` 份；日志目录不可写时降级为仅控制台，不中断程序。
+- `main.py` 启动时依 `config.json` 的 `logging` 段初始化（`level` 默认 `error`，也可调低到 warning/info/debug 排查）。
 
 ---
 

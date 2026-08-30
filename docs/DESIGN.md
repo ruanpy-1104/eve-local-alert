@@ -108,7 +108,7 @@ flowchart TD
 | detector | 目标识别 | 多颜色 HSV 阈值并集 + 连通域 + 图标几何筛选（面积自适应 / 长宽比 / 填充率）+ 两级名字验证 + 连续 N 帧时序确认。 |
 | alerter | 触发警报 | winsound SND_LOOP 循环播放，识别到目标即持续警报直到目标消失（无冷却）；缺失回退 Beep。 |
 | config | 配置读写 | 本地 JSON 保存窗口标识、ROI、启用颜色与识别程度等；与默认值深度合并。 |
-| logger | 日志记录 | 统一 logging：项目根 logs/ 滚动文件 + 控制台，级别可配置，覆盖生命周期事件与异常。 |
+| logger | 日志记录 | 统一 logging：数据目录 logs/ 滚动文件（打包后 `%APPDATA%\eve-alert\logs`）+ 控制台，级别可配置，覆盖生命周期事件与异常。 |
 
 ### 5.1 窗口定位
 
@@ -122,7 +122,7 @@ flowchart TD
 
 工具内置统一日志（`core/logger.py`），**仅记录异常 / 崩溃**，保持日志简洁，便于事后排查闪退与致命错误：
 
-- **输出**：项目根 `logs/eve-alert.log` 滚动文件（默认 2MB、保留 3 份）+ 控制台；级别与文件路径可经 `config.json` 的 `logging` 段调整（`level` / `file`），默认 `error`。
+- **输出**：数据目录 `logs/eve-alert.log` 滚动文件（开发期项目根、打包后 `%APPDATA%\eve-alert`；默认 2MB、保留 3 份）+ 控制台；级别与文件路径可经 `config.json` 的 `logging` 段调整（`level` / `file`），默认 `error`。
 - **格式**：`时间 | 级别 | 模块 | 消息`（如 `2026-08-30 00:20:00 | ERROR | panel | ...`）。
 - **覆盖事件**：监控线程异常（含 traceback）、未捕获异常导致的闪退（`main.py` 的 `sys.excepthook` 统一钩子）、警报播放失败等 ERROR 及以上事件；普通生命周期事件不记录。
 - **级别约定**：默认 `error` 仅记异常；排查问题时可临时调低到 `warning` / `info` / `debug`（`logging.level`），恢复后调回。

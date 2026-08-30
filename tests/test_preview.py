@@ -117,8 +117,22 @@ class TestSelection:
         assert results[0] == expected
         assert expected.width() > 0 and expected.height() > 0
 
-    def test_tiny_drag_emits_minimum_selection(self, app):
-        """最小 1px 微拖视为有效选区（支持 1×1 像素选区）。"""
+    def test_click_does_not_emit_selection(self, app):
+        """单击（按下与抬起同位置）不触发框选。"""
+        pv = PreviewWidget()
+        pv.resize(400, 300)
+        pv.set_image(_make_image(200, 100))
+        pv.enable_selection(True)
+        _render(pv)
+        results = []
+        pv.selection_finished.connect(results.append)
+        QTest.mousePress(pv, Qt.LeftButton, Qt.NoModifier, QPoint(110, 110))
+        QTest.mouseRelease(pv, Qt.LeftButton, Qt.NoModifier, QPoint(110, 110))
+        assert results == []
+        assert pv.selection() is None
+
+    def test_micro_drag_does_not_emit_selection(self, app):
+        """微小拖动（位移不足）不生成选区，避免误点击框选。"""
         pv = PreviewWidget()
         pv.resize(400, 300)
         pv.set_image(_make_image(200, 100))
@@ -128,8 +142,22 @@ class TestSelection:
         pv.selection_finished.connect(results.append)
         QTest.mousePress(pv, Qt.LeftButton, Qt.NoModifier, QPoint(110, 110))
         QTest.mouseRelease(pv, Qt.LeftButton, Qt.NoModifier, QPoint(111, 110))
-        assert len(results) == 1  # 1px 微拖视为 1×1 选区
-        assert results[0].width() >= 1 and results[0].height() >= 1
+        assert results == []
+
+    def test_minimum_selection_emits_2x2(self, app):
+        """最小 2×2 像素选区：拖动达到尺寸后正常触发。"""
+        pv = PreviewWidget()
+        pv.resize(400, 300)
+        pv.set_image(_make_image(200, 100))
+        pv.enable_selection(True)
+        _render(pv)
+        results = []
+        pv.selection_finished.connect(results.append)
+        # 图像 200x100 在 400x300 控件中放大 2 倍：1 图像像素 = 2 控件像素
+        QTest.mousePress(pv, Qt.LeftButton, Qt.NoModifier, QPoint(110, 110))
+        QTest.mouseRelease(pv, Qt.LeftButton, Qt.NoModifier, QPoint(118, 114))
+        assert len(results) == 1
+        assert results[0].width() >= 2 and results[0].height() >= 2
 
     def test_drag_beyond_edge_clamps(self, app):
         """拖拽超出预览边界：选区吸附并对齐图像边缘。"""

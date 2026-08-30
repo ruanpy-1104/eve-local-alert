@@ -21,6 +21,9 @@ SEL_BORDER = QColor(theme.SUCCESS)           # 选区描边（主题成功绿）
 BACKGROUND = QColor(theme.SCREEN)            # 预览画面底（深空屏）
 PLACEHOLDER_COLOR = QColor(theme.MUTED)      # 占位提示文字
 
+MIN_SELECT = 2          # 最小有效选区边长（图像坐标，2x2 像素，避免误选单像素）
+CLICK_TOLERANCE = 3     # 控件坐标：按下 / 抬起移动小于该距离视为点击，不触发框选
+
 
 class PreviewWidget(QWidget):
     """自动适应预览控件，支持预览内拖拽框选与点击取样。"""
@@ -107,13 +110,18 @@ class PreviewWidget(QWidget):
     def mouseReleaseEvent(self, event) -> None:
         if self._sel_enabled and self._drag_start is not None and event.button() == Qt.LeftButton:
             end = self._clamp_to_image(event.position().toPoint())
-            a = self.map_to_image(self._drag_start.x(), self._drag_start.y())
-            b = self.map_to_image(end.x(), end.y())
+            start = self._drag_start
             self._drag_start = None
             self._drag_current = None
+            # 按下 / 抬起几乎未移动（控件坐标）视为误点击，不生成选区
+            if (end - start).manhattanLength() < CLICK_TOLERANCE:
+                self.update()
+                return
+            a = self.map_to_image(start.x(), start.y())
+            b = self.map_to_image(end.x(), end.y())
             if a is not None and b is not None:
                 rect = QRect(QPoint(*a), QPoint(*b)).normalized()
-                if rect.width() >= 1 and rect.height() >= 1:  # 最小支持 1x1 像素
+                if rect.width() >= MIN_SELECT and rect.height() >= MIN_SELECT:  # 最小支持 2x2 像素
                     self._selection = rect
                     self.selection_finished.emit(rect)
             self.update()

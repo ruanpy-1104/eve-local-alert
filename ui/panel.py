@@ -773,8 +773,8 @@ class ControlPanel(QWidget):
             width=rect_img.width() / fw,
             height=rect_img.height() / fh,
         )
-        # 最小支持 1x1 像素选区
-        if roi.width < 1 / fw or roi.height < 1 / fh:
+        # 最小支持 2x2 像素选区
+        if roi.width < 2 / fw or roi.height < 2 / fh:
             self.status_label.setText("选区过小，请重新框选")
             return
         self.config.update(

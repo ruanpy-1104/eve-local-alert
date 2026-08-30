@@ -116,14 +116,16 @@ class Detector:
 
         拆分彩色 / 灰白单独处理，使两者可用不同的填充率阈值去筛色块。
         """
+        # 下采样：极小帧（如 2×2 选区）无法再缩小，跳过 resize 避免目标尺寸为 0 报错
         if self.downscale > 1:
-            frame_bgr = cv2.resize(
-                frame_bgr,
-                None,
-                fx=1 / self.downscale,
-                fy=1 / self.downscale,
-                interpolation=cv2.INTER_AREA,
-            )
+            h, w = frame_bgr.shape[:2]
+            th, tw = max(1, h // self.downscale), max(1, w // self.downscale)
+            if (th, tw) != (h, w):
+                frame_bgr = cv2.resize(
+                    frame_bgr,
+                    (tw, th),
+                    interpolation=cv2.INTER_AREA,
+                )
         hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
         t = self.strictness / 100.0
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)

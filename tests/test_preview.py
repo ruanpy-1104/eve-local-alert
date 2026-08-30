@@ -192,16 +192,6 @@ class TestSelection:
         assert rect.left() == 0  # 起点吸附到图像左上角
         assert rect.top() == 0
 
-    def test_click_emits_when_selection_disabled(self, app):
-        pv = PreviewWidget()
-        pv.resize(400, 300)
-        pv.set_image(_make_image(200, 100))
-        clicks = []
-        pv.clicked.connect(lambda x, y: clicks.append((x, y)))
-        QTest.mousePress(pv, Qt.LeftButton, Qt.NoModifier, QPoint(50, 60))
-        QTest.mouseRelease(pv, Qt.LeftButton, Qt.NoModifier, QPoint(50, 60))
-        assert clicks == [(50, 60)]
-
     def test_set_selection_stored(self, app):
         pv = PreviewWidget()
         from PySide6.QtCore import QRect

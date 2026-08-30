@@ -62,7 +62,7 @@ pip install -r requirements.txt
     "fps": 6
   },
   "logging": {
-    "level": "info",
+    "level": "error",
     "file": "logs/eve-alert.log"
   }
 }
@@ -82,7 +82,7 @@ pip install -r requirements.txt
 | `detection.strictness` | int | 50 | 识别程度 0（宽松）~ 100（严格）。 |
 | `alert.sound_file` | string | `"assets/alert.wav"` | 警报音相对项目根路径；缺失时回退系统蜂鸣。 |
 | `loop.fps` | int | 6 | 检测循环帧率（越低 CPU 占用越低）。 |
-| `logging.level` | string | `"info"` | 日志级别：debug / info / warning / error / critical。 |
+| `logging.level` | string | `"error"` | 日志级别：debug / info / warning / error / critical。 |
 | `logging.file` | string | `"logs/eve-alert.log"` | 日志文件相对路径（项目根基准；日志目录已 gitignore）。 |
 
 > 注意：图标的面积 / 长宽比 / 填充率等几何约束由 `Detector` 内部随下采样比例自适应，不再暴露为配置项；`confirm_frames` 与 `downscale` 仍为配置项。旧版 config.json 中的 `min_area` / `min_aspect_ratio` 会在加载时被自动剔除。
@@ -319,7 +319,7 @@ function detect(frame_bgr):
 - **最小化降级：** 目标窗口最小化（`IsIconic`）时暂停捕获并停止警报，经状态信号提示「目标窗口已最小化，无法监控，请恢复窗口」，恢复后自动继续——监控流程不被中断。
 - **竞态处理：** 手动停止监控时由面板置停止标志并等待线程退出，`run()` 仅在自然退出时发送「已停止」信号，避免手动停止与自然结束竞态覆盖状态。
 - **预警暂停：** 面板「暂停预警」按钮（checkable）经线程安全的 `set_paused()` 置位。暂停期间即使命中也不播放警报；红名离开（未命中）后工作线程自动清除暂停并发出 `alert_paused(False)`，面板同步复位按钮，下次命中恢复报警。
-- **独立预览窗口（`PreviewDialog`）：** 与监控线程独立的另一套捕获 + 检测循环（10 FPS 定时器），在独立窗口叠加识别框并显示命中状态 / FPS；检测参数变化时自动重建 `Detector` 保持与配置一致。窗口非模态，可保留在旁同时操作主面板。
+- **独立预览窗口（`PreviewDialog`）：** 与监控线程独立的另一套捕获 + 检测循环（6 FPS 定时器），在独立窗口叠加识别框并显示命中状态 / FPS；检测参数变化时自动重建 `Detector` 保持与配置一致。窗口非模态，可保留在旁同时操作主面板。
 - 预览帧在捕获成功后经信号发送；捕获失败发 `None` 触发占位提示。
 
 ---

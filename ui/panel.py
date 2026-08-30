@@ -1,7 +1,7 @@
 """控制面板（UI 层）。
 
 基于 PySide6 实现：
-- 启动引导：选择目标程序 -> 在预览画面中框选监控区域 -> 校准/监控；
+- 启动引导：选择目标程序 -> 在预览画面中框选监控区域 -> 颜色选择/监控；
 - 区域选择在控制面板的预览画面内完成（不再在被监控程序界面遮罩框选）；
 - 预览画面自动适应控件尺寸，无需手动缩放；
 - 启动 / 停止预警、实时预览、颜色选择（色块 + 识别程度）。
@@ -34,6 +34,7 @@ from core.colors import COLOR_ORDER, DEFAULT_ALERT_COLORS, EVE_COLORS
 from core.config import ConfigManager
 from core.detector import Detector
 from core.logger import get_logger
+from core.paths import assets_dir
 from core.region_selector import ROI
 from core.window_locator import WindowInfo, WindowLocator, is_minimized
 from ui import theme
@@ -525,7 +526,7 @@ class ControlPanel(QWidget):
     def __init__(self, config_path: Path):
         super().__init__()
         self.config = ConfigManager(config_path)
-        self._root = config_path.parent
+        self._root = assets_dir()  # 资源根目录：开发期为项目根，打包后为 PyInstaller 解包目录
         self._worker: MonitorWorker | None = None
         self._preview_dialog: PreviewDialog | None = None
 

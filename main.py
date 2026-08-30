@@ -1,6 +1,6 @@
 """EVE Alert 程序入口。
 
-默认启动 PySide6 控制面板（UI 模式）：框选监控区域、颜色校准、启动 / 停止监控。
+默认启动 PySide6 控制面板（UI 模式）：框选监控区域、颜色选择、启动 / 停止监控。
 `--cli` 参数启动无 UI 的最小闭环（原 P0 行为），供自动化验证使用。
 """
 from __future__ import annotations
@@ -12,6 +12,7 @@ from pathlib import Path
 
 from core.config import ConfigManager
 from core.logger import get_logger, setup_logging
+from core.paths import app_dir, assets_dir
 
 logger = get_logger(__name__)
 
@@ -19,7 +20,7 @@ logger = get_logger(__name__)
 # 保证遮罩框选 / 窗口矩形 / 捕获区域三者坐标同源不偏移。
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+CONFIG_PATH = app_dir() / "config.json"
 
 
 def _set_dpi_awareness() -> None:
@@ -59,7 +60,7 @@ def run_headless(config_path: Path) -> None:
     detector = Detector(**cfg.data["detection"])
     sound_file = cfg.data["alert"].get("sound_file")
     if sound_file:
-        sound_file = str((config_path.parent / sound_file).resolve())
+        sound_file = str((assets_dir() / sound_file).resolve())
     alerter = Alerter(sound_file)
     interval = 1.0 / cfg.data["loop"].get("fps", 12)
 
@@ -106,7 +107,7 @@ def run_ui(config_path: Path) -> int:
 def _app_icon():
     from PySide6.QtGui import QIcon
 
-    icon = QIcon(str(CONFIG_PATH.parent / "assets" / "logo.png"))
+    icon = QIcon(str(assets_dir() / "assets" / "logo.png"))
     return icon if not icon.isNull() else QIcon()
 
 

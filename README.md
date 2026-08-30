@@ -25,6 +25,7 @@
 ├── config.example.json     # 配置模板（运行时 config.json 不入库，缺失时自动用默认值）
 ├── requirements.txt        # 依赖清单
 ├── pytest.ini              # pytest 配置
+├── CHANGELOG.md            # 更新日志
 ├── docs/
 │   ├── DESIGN.md           # 技术方案设计
 │   ├── DEVELOPMENT.md      # 详细开发文档
@@ -82,6 +83,7 @@ python -m pytest
 
 - 技术方案与选型：[docs/DESIGN.md](docs/DESIGN.md)（HTML 版：[docs/design/index.html](docs/design/index.html)）
 - 实现级开发文档：[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+- 更新日志：[CHANGELOG.md](CHANGELOG.md)
 
 ## 合规提示
 

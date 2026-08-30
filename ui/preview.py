@@ -5,8 +5,7 @@
 - 内容小于控件时按原始像素显示（不放大、保持清晰）；
 - 控件随窗口尺寸变化自动重排，画面始终完整可见。
 
-支持在预览画面上拖拽框选区域（框选结果以图像坐标回传），
-并支持非框选模式下点击取样（供颜色校准器使用）。
+支持在预览画面上拖拽框选区域（框选结果以图像坐标回传）。
 """
 from __future__ import annotations
 
@@ -26,9 +25,8 @@ CLICK_TOLERANCE = 3     # 控件坐标：按下 / 抬起移动小于该距离视
 
 
 class PreviewWidget(QWidget):
-    """自动适应预览控件，支持预览内拖拽框选与点击取样。"""
+    """自动适应预览控件，支持预览内拖拽框选。"""
 
-    clicked = Signal(int, int)           # 控件坐标（非框选模式）
     selection_finished = Signal(object)  # QRect（图像坐标）
 
     def __init__(self, parent=None):
@@ -56,7 +54,7 @@ class PreviewWidget(QWidget):
         self.update()
 
     def enable_selection(self, enabled: bool) -> None:
-        """启用 / 停用框选模式（启用时拖拽框选，停用时点击取样）。"""
+        """启用 / 停用框选模式（启用时拖拽框选）。"""
         self._sel_enabled = enabled
         self.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
         if not enabled:
@@ -126,8 +124,6 @@ class PreviewWidget(QWidget):
                     self.selection_finished.emit(rect)
             self.update()
             return
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit(int(event.position().x()), int(event.position().y()))
         super().mouseReleaseEvent(event)
 
     # ---- 绘制 ----

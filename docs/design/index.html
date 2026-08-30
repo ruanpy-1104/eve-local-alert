@@ -40,7 +40,7 @@
 
     <section class="doc-block" id="overview">
       <h2>项目定位与设计原则</h2>
-      <p>在《EVE Online》中，敌对玩家在总览（Overview）与太空视野中以红色名称标识。本工具的目标是充当一台<strong>“只读屏幕阅读器”</strong>：它只读取操作系统已经渲染到屏幕上的像素，对指定游戏窗口画面做实时捕获，在玩家自定义的监控区域内检测红色目标，一旦命中立即播放本地警报音。</p>
+      <p>在《EVE Online》中，敌对玩家在总览（Overview）与太空视野中以特定颜色名称标识（默认红 / 橙红 / 橙色）。本工具的目标是充当一台<strong>“只读屏幕阅读器”</strong>：它只读取操作系统已经渲染到屏幕上的像素，对指定游戏窗口画面做实时捕获，在玩家自定义的监控区域内按所选颜色检测目标，一旦命中立即播放本地警报音。</p>
       <p>整个方案被四条不可妥协的设计红线约束，它们决定了后续所有技术选型：</p>
       <ul>
         <li><strong>只读截屏：</strong>仅通过操作系统图形接口读取屏幕像素，与 OBS、截图软件同属一类读操作，不触碰游戏进程内存。</li>
@@ -49,10 +49,10 @@
         <li><strong>轻量低耗：</strong>只处理玩家选定的 ROI（Region of Interest），采用低帧率 + 下采样 + 纯颜色判定的高效管线。</li>
       </ul>
       <div class="doc-callout">
-        <p><strong>核心设计决策：</strong>红名识别不依赖模型推理或模板库，而采用<strong>基于 HSV 颜色空间的双区间红色阈值分割</strong>。这是满足“轻量化 + 低延迟 + 无需训练”的最简可靠路径——阈值运算在 OpenCV 的 C/C++ 后端执行，单帧处理量级为毫秒级，配合 ROI 限定与时序确认即可稳定达到 90% 以上准确率。</p>
+        <p><strong>核心设计决策：</strong>目标识别不依赖模型推理或模板库，而采用<strong>基于 HSV 颜色空间的预设颜色阈值分割</strong>。这是满足“轻量化 + 低延迟 + 无需训练”的最简可靠路径——阈值运算在 OpenCV 的 C/C++ 后端执行，单帧处理量级为毫秒级，配合 ROI 限定、识别程度调节与时序确认即可稳定达到 90% 以上准确率。</p>
       </div>
       <div class="doc-note">
-        <p><strong>文档说明：</strong>本文档版本 v1.0，成稿日期 2026-08-29，适用于 Windows 10 / 11 平台。文档给出技术栈、模块划分、核心算法、性能预算与工程目录，供开发者作为实现与迭代的基线。</p>
+        <p><strong>文档说明：</strong>本文档版本 v1.0，成稿日期 2026-08-30，适用于 Windows 10 / 11 平台。文档给出技术栈、模块划分、核心算法、性能预算与工程目录，供开发者作为实现与迭代的基线。</p>
       </div>
     </section>
 
@@ -73,8 +73,8 @@
           <tbody>
             <tr><td>FR-1</td><td>游戏窗口实时捕获</td><td>精准定位并获取指定的 EVE 端游窗口画面，支持窗口化、无边框全屏等常见模式。</td></tr>
             <tr><td>FR-2</td><td>自定义区域选择</td><td>玩家通过鼠标框选游戏界面中的特定区域作为监控 ROI，坐标以归一化方式保存。</td></tr>
-            <tr><td>FR-3</td><td>红名识别</td><td>在自定义区域内准确识别出现的敌对目标（红名）。</td></tr>
-            <tr><td>FR-4</td><td>警报触发</td><td>检测到红名时立即播放预设警报音，含防抖与冷却机制避免刷屏。</td></tr>
+            <tr><td>FR-3</td><td>目标识别</td><td>在自定义区域内按所选颜色准确识别出现的敌对目标（默认红 / 橙红 / 橙 / 灰白）。</td></tr>
+            <tr><td>FR-4</td><td>警报触发</td><td>检测到目标时立即持续循环播放预设警报音，目标消失即停止（无冷却）。</td></tr>
             <tr><td>FR-5</td><td>完全本地化</td><td>不包含任何网络请求或数据上传功能，全程离线运行。</td></tr>
             <tr><td>FR-6</td><td>反作弊安全</td><td>不修改内存、不注入、不 Hook，仅做只读屏幕捕获。</td></tr>
           </tbody>
@@ -93,10 +93,10 @@
             </tr>
           </thead>
           <tbody>
-            <tr><td>可靠性</td><td>识别准确率</td><td>≥ 90%（对玩家选定 ROI 内的红名目标）</td></tr>
-            <tr><td>可靠性</td><td>响应延迟</td><td>≤ 300 ms（红名出现到警报响起，目标 ≤ 100 ms）</td></tr>
+            <tr><td>可靠性</td><td>识别准确率</td><td>≥ 90%（对玩家选定 ROI 内的目标）</td></tr>
+            <tr><td>可靠性</td><td>响应延迟</td><td>≤ 300 ms（目标出现到警报响起，目标 ≤ 100 ms）</td></tr>
             <tr><td>兼容性</td><td>操作系统</td><td>Windows 10 / 11</td></tr>
-            <tr><td>兼容性</td><td>分辨率 / 窗口模式</td><td>1080p、1440p、4K；窗口化、无边框全屏、独占全屏</td></tr>
+            <tr><td>兼容性</td><td>分辨率 / 窗口模式</td><td>1080p、1440p、4K；窗口化、无边框全屏（独占全屏按可用性自动回退）</td></tr>
             <tr><td>资源占用</td><td>CPU / 内存</td><td>低功耗运行，空闲时 CPU 占用显著低于 1 个逻辑核心</td></tr>
           </tbody>
         </table>
@@ -106,7 +106,7 @@
 
     <section class="doc-block" id="tech-stack">
       <h2>技术栈选型</h2>
-      <p>选型的第一性原则是：<strong>性能瓶颈全部下沉到 C/C++ 库，语言层只做“胶水”</strong>。截屏由 mss 的 C 实现完成，图像处理由 OpenCV 的 C++ 后端完成，因此即便用 Python 作调度层，逐帧开销也可忽略，却能换来最短的迭代周期。这也是本工具首选 Python 而非 C++/C# 的根本原因。</p>
+      <p>选型的第一性原则是：<strong>性能瓶颈全部下沉到 C/C++ 库，语言层只做“胶水”</strong>。截屏由 PrintWindow（GDI）与 mss 的 C 实现完成，图像处理由 OpenCV 的 C++ 后端完成，因此即便用 Python 作调度层，逐帧开销也可忽略，却能换来最短的迭代周期。这也是本工具首选 Python 而非 C++/C# 的根本原因。</p>
 
       <h3>语言 / 运行时方案对比</h3>
       <div class="table-scroll">
@@ -140,10 +140,10 @@
           </thead>
           <tbody>
             <tr><td>语言</td><td>Python 3.11+</td><td>开发快、生态全，性能由底层 C 库承担。</td></tr>
-            <tr><td>屏幕捕获</td><td>PrintWindow（窗口内容），mss 兜底</td><td>PrintWindow 直接渲染所选窗口自身画面，被遮挡也只捕获所选窗口；失效场景回退 mss 屏幕抓取。</td></tr>
+            <tr><td>屏幕捕获</td><td>PrintWindow（窗口内容渲染），mss（BitBlt）兜底</td><td>PrintWindow 直接渲染目标窗口自身画面，被遮挡时也只捕获所选窗口；独占全屏等失效场景回退 mss 屏幕抓取。</td></tr>
             <tr><td>图像处理</td><td>OpenCV + NumPy</td><td>颜色阈值、形态学、轮廓均在 C++ 后端高速执行。</td></tr>
-            <tr><td>窗口定位</td><td>pywin32（win32gui）</td><td>按进程名 / 窗口标题枚举并命中 EVE 窗口，读取窗口矩形。</td></tr>
-            <tr><td>GUI</td><td>PySide6</td><td>控制面板、自动适应预览控件（预览内框选）、目标程序选择对话框；若追求更小体积可用 Tkinter 替代。</td></tr>
+            <tr><td>窗口定位</td><td>pywin32（win32gui）</td><td>按进程名 / 窗口标题枚举并命中目标窗口，读取窗口矩形；含最小化状态检测。</td></tr>
+            <tr><td>GUI</td><td>PySide6</td><td>控制面板、自动适应预览控件（预览内框选）、目标程序选择对话框。</td></tr>
             <tr><td>音频</td><td>winsound（stdlib）</td><td>SND_LOOP 循环播放 WAV，识别即播直到目标消失；文件缺失回退 Beep。</td></tr>
             <tr><td>配置</td><td>本地 JSON</td><td>无数据库、无网络，符合完全本地化要求。</td></tr>
             <tr><td>打包</td><td>PyInstaller / Nuitka</td><td>产出免安装 exe；Nuitka 编译后可进一步降低运行开销与启动时间。</td></tr>
@@ -160,16 +160,16 @@
         <pre class="mermaid">
 flowchart TD
     CFG["配置管理 config.json"] --> WL["窗口定位 WindowLocator"]
-    WL --> CAP["画面捕获 Capture mss"]
-    RS["区域选择 RegionSelector"] --> CFG
+    WL --> CAP["画面捕获 Capture PrintWindow"]
+    RS["区域选择 RegionSelector（预览内框选）"] --> CFG
     CFG --> CAP
     CAP --> PRE["图像预处理 ROI 与 HSV"]
-    PRE --> DET["红名检测 Detector"]
+    PRE --> DET["目标检测 Detector（多颜色）"]
     DET -->|未命中| CAP
     DET -->|命中| ALT["警报 Alerter winsound"]
         </pre>
       </div>
-      <p class="figure-caption"><strong>图 1：系统架构。</strong><span>检测到红名触发警报，未命中则回到捕获循环；警报带冷却防抖后重新进入监控态。</span></p>
+      <p class="figure-caption"><strong>图 1：系统架构。</strong><span>检测到目标触发警报，未命中则回到捕获循环。</span></p>
     </section>
 
     <section class="doc-block" id="modules">
@@ -185,12 +185,13 @@ flowchart TD
             </tr>
           </thead>
           <tbody>
-            <tr><td>window_locator</td><td>定位并锁定 EVE 窗口</td><td>EnumWindows 按进程名 exefile.exe / 标题匹配；GetWindowRect 与 DwmGetWindowAttribute 取真实边框。</td></tr>
-            <tr><td>capture</td><td>按窗口矩形抓取画面</td><td>mss 按窗口 Rect 抓取；可选 0.5–1x 缩放；独占全屏回退 dxcam。</td></tr>
-            <tr><td>region_selector</td><td>鼠标框选监控区域</td><td>透明置顶遮罩层；记录起止点并转为归一化坐标存储。</td></tr>
-            <tr><td>detector</td><td>红名识别</td><td>HSV 双区间阈值 + 形态学 + 轮廓筛选 + 连续 N 帧时序确认。</td></tr>
-            <tr><td>alerter</td><td>触发警报</td><td>winsound 播放 WAV；冷却计时防抖；可选循环播报。</td></tr>
-            <tr><td>config</td><td>配置读写</td><td>本地 JSON 保存窗口标识、ROI、颜色阈值、警报音与冷却参数。</td></tr>
+            <tr><td>window_locator</td><td>定位并锁定目标窗口</td><td>EnumWindows 按进程名 / 标题匹配；GetClientRect 与 ClientToScreen 取真实边框；IsIconic 最小化检测。</td></tr>
+            <tr><td>capture</td><td>按窗口内容抓取画面</td><td>PrintWindow（PW_RENDERFULLCONTENT）直接渲染目标窗口自身画面，被遮挡也只捕获所选窗口；失败回退 mss 屏幕抓取。</td></tr>
+            <tr><td>region_selector</td><td>ROI 坐标归一化换算</td><td>预览画面内鼠标框选，记录起止点并转为窗口归一化坐标存储；越界自动钳制。</td></tr>
+            <tr><td>detector</td><td>目标识别</td><td>多颜色 HSV 阈值并集 + 连通域 + 图标几何筛选（面积自适应 / 长宽比 / 填充率）+ 两级名字验证 + 连续 N 帧时序确认。</td></tr>
+            <tr><td>alerter</td><td>触发警报</td><td>winsound SND_LOOP 循环播放，识别到目标即持续警报直到目标消失（无冷却）；缺失回退 Beep。</td></tr>
+            <tr><td>config</td><td>配置读写</td><td>本地 JSON 保存窗口标识、ROI、启用颜色与识别程度等；与默认值深度合并。</td></tr>
+            <tr><td>logger</td><td>日志记录</td><td>统一 logging：项目根 logs/ 滚动文件 + 控制台，级别可配置，覆盖生命周期事件与异常。</td></tr>
           </tbody>
         </table>
       </div>
@@ -200,58 +201,72 @@ flowchart TD
       <p>通过进程名（EVE 客户端进程，如 <code>exefile.exe</code>）枚举顶层窗口，命中后读取窗口客户区矩形。注意 Windows 的 DPI 缩放会使逻辑坐标与物理像素不一致，须调用 <code>SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)</code>，否则在高 DPI 下捕获位置会偏移，导致 ROI 错位。</p>
 
       <h3>区域选择与坐标归一化</h3>
-      <p>框选的 ROI 以<strong>窗口内的归一化坐标</strong>（0–1 的 x/y 比例）保存，而非绝对像素。这样玩家切换分辨率或改变窗口尺寸后，监控区域仍自动跟随原位置，无需重新框选。实际抓取时再由当前窗口尺寸换算回像素坐标。</p>
+      <p>框选在<strong>控制面板的预览画面内</strong>通过鼠标拖拽完成（不覆盖被监控程序界面，也不影响其他应用操作）。框选的 ROI 以<strong>窗口内的归一化坐标</strong>（0–1 的 x/y 比例）保存，而非绝对像素。这样玩家切换分辨率或改变窗口尺寸后，监控区域仍自动跟随原位置，无需重新框选。实际抓取时再由当前窗口尺寸换算回像素坐标，框选越出预览边界时自动钳制到可视边缘。</p>
+
+      <h3>日志与运行诊断</h3>
+      <p>工具内置统一日志（<code>core/logger.py</code>），<strong>仅记录异常 / 崩溃</strong>，保持日志简洁，便于事后排查闪退与致命错误：</p>
+      <ul>
+        <li><strong>输出：</strong>项目根 <code>logs/eve-alert.log</code> 滚动文件（默认 2MB、保留 3 份）+ 控制台；级别与文件路径可经 <code>config.json</code> 的 <code>logging</code> 段调整，默认 <code>error</code>。</li>
+        <li><strong>格式：</strong><code>时间 | 级别 | 模块 | 消息</code>。</li>
+        <li><strong>覆盖事件：</strong>监控线程异常（含 traceback）、未捕获异常导致的闪退（<code>sys.excepthook</code> 统一钩子）、警报播放失败等 ERROR 及以上事件；普通生命周期事件不记录。</li>
+      </ul>
     </section>
 
     <section class="doc-diagram" id="detection">
-      <h2>核心算法：红名识别</h2>
-      <p>红名识别的核心是颜色分割。EVE 中敌对目标的名称呈现为高饱和度的红色，而红色在 HSV 色相环上跨越 0° 两侧（0–10° 与 170–180°），因此需要<strong>双区间阈值</strong>拼接，否则会漏掉靠近色相边界的红色。整条流水线如下。</p>
+      <h2>核心算法：目标识别</h2>
+      <p>目标识别的核心是颜色分割。EVE 总览中，每个玩家名字<strong>前方</strong>都有一个实心小图标（近正方形，尺寸随名字字体大小可调），图标颜色可在总览设置中更改为 12 种预设之一（对应“警报颜色”）；而名字文字本身始终是白色 / 灰白，不随阵营变化。因此本方案按<strong>“图标”</strong>而非“文字条形”检测，且判定<strong>不以固定像素为准</strong>。整条流水线如下。</p>
       <div class="diagram-frame table-scroll mermaid-frame">
         <pre class="mermaid">
 flowchart LR
     A["捕获帧"] --> B["ROI 裁剪"]
     B --> C["下采样 2 倍"]
     C --> D["BGR 转 HSV"]
-    D --> E["红色双区间阈值"]
-    E --> F["形态学去噪"]
-    F --> G["轮廓筛选 面积与宽高比"]
+    D --> E["多颜色阈值并集"]
+    E --> F["连通域分析 面积 / 长宽比 / 填充率"]
+    F --> G["名字验证 图标右侧有明亮文本"]
     G --> H["时序确认 连续 N 帧"]
     H --> I["触发警报"]
         </pre>
       </div>
-      <p class="figure-caption"><strong>图 2：红名识别流水线。</strong><span>下采样与 ROI 裁剪把计算量降到最小；时序确认用时间维度消除闪烁误报。</span></p>
+      <p class="figure-caption"><strong>图 2：目标识别流水线。</strong><span>下采样与 ROI 裁剪把计算量降到最小；时序确认用时间维度消除闪烁误报。</span></p>
 
       <h3>颜色阈值初值</h3>
-      <p>以下为 OpenCV HSV 空间（H∈[0,179]、S∈[0,255]、V∈[0,255]）的初始阈值，需在实机上通过内置“颜色取样器”与滑动条做一次校准，以适配不同显卡色调与 UI 皮肤。</p>
+      <p>每种颜色以“中心色相 + 识别严格度”描述，识别程度滑块（宽松 ~ 严格）按比例线性插值：宽松时色相带宽更大、饱和度 / 明度下限更低；严格时带宽收窄、下限抬高。以下为 OpenCV HSV 空间（H∈[0,179]、S∈[0,255]、V∈[0,255]）的两端初值。</p>
       <div class="table-scroll">
         <table class="doc-data-table">
           <thead>
             <tr>
-              <th>通道</th>
-              <th>红色区间一</th>
-              <th>红色区间二</th>
-              <th>含义</th>
+              <th>类别</th>
+              <th>参数</th>
+              <th>宽松端</th>
+              <th>严格端</th>
+              <th>说明</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>H（色相）</td><td class="num">0 – 10</td><td class="num">160 – 179</td><td>覆盖色相环红色两端</td></tr>
-            <tr><td>S（饱和度）</td><td class="num">150 – 255</td><td class="num">150 – 255</td><td>高饱和，排除粉白灰</td></tr>
-            <tr><td>V（明度）</td><td class="num">60 – 255</td><td class="num">60 – 255</td><td>保留可见红色，抗暗部噪声</td></tr>
+            <tr><td>彩色（10 色）</td><td>色相半宽</td><td class="num">±14</td><td class="num">±4</td><td>围绕各色中心色相；严格时收窄，避免相邻色彩串扰</td></tr>
+            <tr><td>彩色（10 色）</td><td>饱和度下限</td><td class="num">70</td><td class="num">140</td><td>越高越排除粉白灰</td></tr>
+            <tr><td>彩色（10 色）</td><td>明度下限</td><td class="num">40</td><td class="num">75</td><td>越高越排除暗部</td></tr>
+            <tr><td>灰白</td><td>明度下限</td><td class="num">88</td><td class="num">100</td><td>无色相；下探以捕获较暗的中立图标，白色名字文字靠填充率剔除</td></tr>
+            <tr><td>黑色</td><td>明度上限</td><td class="num">100</td><td class="num">55</td><td>无色相，只认更暗的黑色</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="figure-caption"><strong>表 6：HSV 红色阈值初值。</strong><span>两区间掩码做按位或后合并，再进入形态学处理。</span></p>
+      <p class="figure-caption"><strong>表 6：HSV 颜色阈值两端初值。</strong><span>各启用的颜色区间掩码做按位或合并，再进入形态学处理。</span></p>
 
       <h3>误报与漏报抑制</h3>
       <ul>
-        <li><strong>形态学去噪：</strong>开运算（先腐蚀后膨胀）去除孤立噪点，闭运算填补名字笔画间的小空洞。</li>
-        <li><strong>面积阈值：</strong>过滤面积过小的红色像素，避免单点闪烁触发误报。</li>
-        <li><strong>宽高比筛选：</strong>名牌通常为宽扁长条，用外接矩形宽高比进一步剔除方形或细长噪点。</li>
-        <li><strong>时序确认：</strong>候选区域需<strong>连续 N 帧</strong>（如 3 帧）命中才判为红名，消除帧间闪烁与瞬时噪声。</li>
-        <li><strong>报警冷却：</strong>报警后进入冷却（如 5 秒），期间不重复播放，避免同一目标持续触发刷屏。</li>
+        <li><strong>连通域 + 图标几何筛选：</strong>保留“近方形 + 高填充率”的紧凑色块，判定不以固定像素为准；面积下限仅剔除噪点级小色块、上限按帧面积比例留余量，外接矩形长宽比约束在 0.7–1.6。</li>
+        <li><strong>填充率按颜色类别区别对待：</strong>彩色图标用常规填充率（≥0.70）；名字文字是白色/灰白，只会污染“灰白”掩码，故灰白用更高填充率（≥0.82）剔除文字笔画。</li>
+        <li><strong>灰白“灰而非白”判定：</strong>对通过几何筛选的色块检查平均明度（meanV 超过阈值判为白色而剔除），排除名字文字与图标里的白色高光。</li>
+        <li><strong>灰白“行首图标”判定：</strong>名字文字是一串，每个字同行左侧必有前一个字或图标；真正的阵营图标位于行首、左侧空白，据此剔除同行左侧已有同色内容的色块。</li>
+        <li><strong>名字验证（两级自适应）：</strong>优先校验图标右侧是否出现与其对齐的明亮名字文字（白 / 灰白）；若整帧都没有名字（纯图标 ROI），则退化为仅凭几何判定。</li>
+        <li><strong>形态学去噪：</strong>开运算去除孤立噪点，仅在 1 倍下采样时叠加。</li>
+        <li><strong>时序确认：</strong>候选区域需连续 N 帧命中才判定为目标，消除帧间闪烁与瞬时噪声。</li>
+        <li><strong>连续警报（无冷却）：</strong>识别到目标立即循环播放警报音，目标消失即停止——警报状态完全跟随识别结果。</li>
       </ul>
       <div class="doc-note">
-        <p><strong>准确率说明：</strong>颜色方案在“玩家自行限定 ROI（如只框总览列）+ 现场校准 + 时序确认”的组合下可稳定达到 90% 以上准确率。主要残余风险是 ROI 内恰好存在相近红色 UI 元素（如红色星域图标），可通过更窄的 ROI 与阈值收紧进一步缓解；若后续追求更高准确率，可在候选区域放大后追加模板匹配作为二级复核，但 MVP 阶段不必引入。</p>
+        <p><strong>准确率说明：</strong>颜色方案在“玩家自行限定 ROI（如只框总览列）+ 颜色选择 + 识别程度调节 + 图标几何筛选 + 两级名字验证 + 时序确认”的组合下可稳定达到 90% 以上准确率。收到误报时把识别程度往“严格”调，漏报时往“宽松”调。</p>
       </div>
     </section>
 
@@ -268,21 +283,21 @@ flowchart LR
             </tr>
           </thead>
           <tbody>
-            <tr><td>截屏（BitBlt）</td><td class="num">5 – 15 ms</td><td class="num">50 ms</td></tr>
+            <tr><td>截屏（PrintWindow）</td><td class="num">5 – 15 ms</td><td class="num">50 ms</td></tr>
             <tr><td>ROI 裁剪 + 下采样</td><td class="num">&lt; 2 ms</td><td class="num">10 ms</td></tr>
             <tr><td>BGR→HSV + 阈值</td><td class="num">1 – 3 ms</td><td class="num">15 ms</td></tr>
-            <tr><td>形态学 + 轮廓</td><td class="num">1 – 5 ms</td><td class="num">20 ms</td></tr>
+            <tr><td>连通域 + 几何筛选 + 名字验证</td><td class="num">1 – 5 ms</td><td class="num">20 ms</td></tr>
             <tr><td>判定 + 触发警报</td><td class="num">&lt; 5 ms</td><td class="num">20 ms</td></tr>
             <tr><td><strong>合计</strong></td><td class="num"><strong>约 20 – 40 ms</strong></td><td class="num"><strong>&lt; 100 ms</strong></td></tr>
           </tbody>
         </table>
       </div>
-      <p class="figure-caption"><strong>表 7：单帧延迟预算。</strong><span>以 10–15 FPS 的检测循环运行，端到端延迟约为循环周期 + 单帧耗时，仍远低于 300 ms 上限。</span></p>
+      <p class="figure-caption"><strong>表 7：单帧延迟预算。</strong><span>以默认 6 FPS（可配置，上限 12–15）的检测循环运行，端到端延迟约为循环周期 + 单帧耗时，仍远低于 300 ms 上限。</span></p>
 
       <h3>低功耗优化策略</h3>
       <ul>
         <li><strong>只处理 ROI：</strong>不解析整屏，仅在玩家框选矩形内做颜色判定。</li>
-        <li><strong>降帧率：</strong>检测循环 10–15 FPS 即可（红名会持续存在，无需 60 FPS）。</li>
+        <li><strong>降帧率：</strong>检测循环默认 6 FPS（红名会持续存在，无需 60 FPS）。</li>
         <li><strong>下采样：</strong>检测帧先缩小 2 倍，颜色分割对分辨率不敏感，可减少约 3/4 计算量。</li>
         <li><strong>惰性复核：</strong>仅在检测到候选时，才在原始分辨率上做一次轮廓复核，兼顾速度与精度。</li>
       </ul>
@@ -296,7 +311,7 @@ flowchart LR
         <li><strong>操作系统：</strong>目标 Windows 10 / 11，使用标准 Win32 与 GDI 接口，无系统级驱动。</li>
         <li><strong>DPI 感知：</strong>声明 Per-Monitor V2，保证高 DPI 下窗口矩形与 ROI 换算正确。</li>
         <li><strong>分辨率：</strong>ROI 以归一化坐标存储，1080p / 1440p / 4K 及窗口缩放均自动适配。</li>
-        <li><strong>窗口模式：</strong>窗口化与无边框全屏直接支持；独占全屏下 BitBlt 可能返回黑屏，自动回退到 DXGI 桌面复制（dxcam），或提示玩家切换为无边框窗口。</li>
+        <li><strong>窗口模式：</strong>窗口化与无边框全屏直接支持；PrintWindow 在少数窗口（如独占全屏 / 某些渲染管线）下可能取不到画面，自动回退 mss 屏幕抓取（按窗口屏幕矩形截取）。</li>
       </ul>
 
       <h3>反作弊安全</h3>
@@ -318,6 +333,9 @@ flowchart LR
       <pre class="codeblock"><code>├── main.py                 # 程序入口（UI 控制面板 / --cli 无 UI 闭环）
 ├── config.example.json     # 配置模板（运行时 config.json 不入库，缺失时自动用默认值）
 ├── requirements.txt        # 依赖清单
+├── requirements-dev.txt    # 开发依赖（pytest）
+├── pytest.ini              # pytest 配置
+├── CHANGELOG.md            # 更新日志
 ├── core/
 │   ├── window_locator.py   # 窗口定位：按进程名 / 标题命中 + 最小化检测
 │   ├── capture.py          # 画面捕获：PrintWindow 窗口内容 + mss 屏幕回退
@@ -326,15 +344,21 @@ flowchart LR
 │   ├── colors.py           # 12 种 EVE 总览颜色预设与识别程度换算
 │   ├── alerter.py          # 警报：winsound 连续循环播放 / 停止
 │   ├── config.py           # 配置读写：默认值深度合并
+│   ├── paths.py            # 运行时路径：区分开发期与打包后目录
 │   └── logger.py           # 日志：滚动文件 + 控制台，级别可配置
 ├── ui/
 │   ├── panel.py            # 控制面板：目标选择 / 预览内框选 / 监控线程 / 颜色选择 / 预警暂停 / 独立预览
-│   ├── preview.py          # 自动适应预览控件（预览内拖拽框选）
+│   ├── preview.py          # 自动适应预览控件（支持预览内拖拽框选）
+│   ├── theme.py            # 统一深色主题（QSS + 调色板）
 │   └── window_picker.py    # 目标程序选择对话框
 ├── tests/                  # 单元测试（pytest）
-├── docs/                   # 技术方案与开发文档
+├── docs/
+│   ├── DESIGN.md           # 技术方案设计（本文档）
+│   ├── DEVELOPMENT.md      # 实现级开发文档
+│   └── design/             # 技术方案 HTML 版（浏览器阅读）
 └── assets/
     ├── alert.wav           # 预设警报音
+    ├── github.svg          # GitHub 图标
     ├── logo.png            # 应用图标（PNG）
     └── logo.svg            # 应用图标（SVG）</code></pre>
       <p class="figure-caption"><strong>图 3：工程目录结构。</strong><span>core 层无 UI 依赖，detector 可独立做准确率与延迟的基准测试。</span></p>
@@ -342,22 +366,22 @@ flowchart LR
 
     <section class="doc-block" id="roadmap">
       <h2>开发路线图</h2>
-      <p>按“先打通链路、再补识别、最后优化与打包”的顺序推进，每一阶段都有可验证的里程碑。</p>
+      <p>按“先打通链路、再补识别、最后优化与打包”的顺序推进，每一阶段都有可验证的里程碑。当前 P0–P4 已全部完成。</p>
       <div class="table-scroll">
         <table class="doc-data-table">
           <thead>
             <tr>
               <th style="width:100px;">阶段</th>
               <th style="width:260px;">目标</th>
-              <th>验收标准</th>
+              <th>状态</th>
             </tr>
           </thead>
           <tbody>
-            <tr><td>P0</td><td>窗口定位 + 捕获 + 实时预览</td><td>能锁定 EVE 窗口并流畅显示捕获画面，位置无偏移。</td></tr>
-            <tr><td>P1</td><td>区域选择 + 配置持久化</td><td>可框选 ROI，重启后坐标仍正确、跨分辨率不漂移。</td></tr>
-            <tr><td>P2</td><td>目标识别 + 颜色选择</td><td>12 色预设勾选 + 识别程度滑块（固定档位），识别准确率 ≥ 90%。</td></tr>
-            <tr><td>P3</td><td>警报触发 + 连续播报</td><td>命中即循环警报直到目标消失（无冷却），响应延迟 ≤ 300 ms。</td></tr>
-            <tr><td>P4</td><td>性能优化 + 多分辨率适配 + 打包</td><td>低功耗运行（默认 6 FPS）、面板自由缩放，输出免安装 exe，Win10/11 与主流分辨率验证通过。</td></tr>
+            <tr><td>P0</td><td>窗口定位 + 捕获 + 实时预览</td><td>✅ 完成：PrintWindow 窗口内容捕获，选择目标后自动框选</td></tr>
+            <tr><td>P1</td><td>区域选择 + 配置持久化</td><td>✅ 完成：预览内框选，归一化坐标跨分辨率稳定</td></tr>
+            <tr><td>P2</td><td>目标识别 + 颜色选择</td><td>✅ 完成：12 色预设勾选 + 识别程度滑块，替代原校准器</td></tr>
+            <tr><td>P3</td><td>警报触发 + 连续播报</td><td>✅ 完成：识别即循环警报直到目标消失（无冷却）</td></tr>
+            <tr><td>P4</td><td>性能优化 + 多分辨率适配 + 打包</td><td>✅ 完成：低功耗运行（默认 6 FPS）、面板自由缩放、最小化优雅降级</td></tr>
           </tbody>
         </table>
       </div>
@@ -367,12 +391,12 @@ flowchart LR
     <section class="doc-block" id="risks">
       <h2>风险与边界</h2>
       <ul>
-        <li><strong>颜色阈值漂移：</strong>不同显卡驱动色调、游戏 UI 皮肤、夜间模式滤镜会改变红色表现，需现场校准；建议内置“一键取样当前红名颜色”。</li>
-        <li><strong>ROI 外漏报：</strong>监控范围仅限玩家框选区域，红名出现在 ROI 之外时无法识别，属预期边界。</li>
-        <li><strong>游戏更新风险：</strong>EVE 客户端更新可能调整 UI 配色或字体渲染，需在版本更新后复测阈值。</li>
-        <li><strong>独占全屏黑屏：</strong>BitBlt 在独占全屏下可能取不到画面，需 DXGI 回退或引导使用无边框窗口。</li>
-        <li><strong>相近红色误报：</strong>ROI 内若存在红色星域 / 红色 UI 图标可能误报，靠更窄 ROI + 阈值收紧 + 时序确认缓解。</li>
-        <li><strong>无障碍局限：</strong>纯声音警报对听障玩家无效，可在 P3 追加屏幕边缘红色闪烁作为视觉补充。</li>
+        <li><strong>颜色阈值漂移：</strong>不同显卡驱动色调、游戏 UI 皮肤、夜间模式滤镜会改变颜色表现，可通过“颜色选择 + 识别程度滑块”在宽松 / 严格之间调节。</li>
+        <li><strong>ROI 外漏报：</strong>监控范围仅限玩家框选区域，目标出现在 ROI 之外时无法识别，属预期边界。</li>
+        <li><strong>游戏更新风险：</strong>EVE 客户端更新可能调整 UI 配色或字体渲染，需在版本更新后复测识别效果。</li>
+        <li><strong>PrintWindow 黑屏 / 空帧：</strong>个别窗口（独占全屏、特殊渲染管线）PrintWindow 可能取不到画面，自动回退 mss 屏幕抓取；仍失败时提示玩家切换窗口模式或恢复窗口。</li>
+        <li><strong>相近颜色误报：</strong>ROI 内若存在与所选颜色相近的 UI 元素可能误报，靠更窄 ROI + 更严格识别程度 + 时序确认缓解。</li>
+        <li><strong>无障碍局限：</strong>纯声音警报对听障玩家无效，可在后续版本追加屏幕边缘闪烁等视觉补充。</li>
       </ul>
     </section>
 

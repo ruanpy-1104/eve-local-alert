@@ -16,7 +16,8 @@ EVE 总览中，每个玩家名字**前方**都有一个实心小图标（近正
 - 彩色用常规填充率（避免下采样后漏掉图标）；
 - 灰白用更高填充率（下采样后仍是实心方块 fill≥0.9），从而把碎笔画般的名字文字剔除。
 
-随后以连续 N 帧时序确认抑制闪烁误报。
+随后以「同一位置连续 N 帧」时序确认抑制闪烁 / 位置漂移误报：目标在总览中位置固定，
+位置频繁跳变（移动的目标、不同位置轮流出现的噪声）不会被累计为命中。
 """
 from __future__ import annotations
 
@@ -69,11 +70,14 @@ class Detector:
         self.need_name = need_name
         self.name_v = name_v
         self._confirm_count = 0
+        # 上一帧的候选框（下采样空间），用于「同一位置」时序确认。
+        self._prev_boxes: list[tuple[int, int, int, int]] = []
         self.last_boxes: list[tuple[int, int, int, int]] = []  # 最近一次检测的框（原分辨率）
 
     def reset(self) -> None:
-        """清空时序确认计数。"""
+        """清空时序确认状态（计数与上一帧位置）。"""
         self._confirm_count = 0
+        self._prev_boxes = []
 
     def _area_bounds(self, frame_h: int, frame_w: int) -> tuple[int, int]:
         """图标面积阈值（下采样空间）。
@@ -231,9 +235,32 @@ class Detector:
         """单帧判定：是否包含图标候选区域（不做时序确认）。"""
         return bool(self.red_boxes(frame_bgr))
 
-    def detect(self, frame_bgr: np.ndarray) -> bool:
-        """带时序确认的判定：连续 confirm_frames 帧命中才返回 True。
+    def _overlaps_previous(
+        self,
+        boxes: list[tuple[int, int, int, int]],
+        prev: list[tuple[int, int, int, int]],
+    ) -> bool:
+        """判断当前候选框中是否有与上一帧**同一位置**延续的框。
 
+        总览里的玩家条目位置固定，图标在相邻帧几乎重合；下采样会带来 ±1~2 像素抖动，
+        故以「中心偏移不超过框尺寸的 75%」作为同一位置的容差。只要任一候选框在上一帧
+        相同位置持续出现，即视为延续；位置整体跳变（如总览滚动、不同位置轮流出现）则
+        视为新位置，重新累计时序确认。
+        """
+        for bx, by, bw, bh in boxes:
+            bcx, bcy = bx + bw / 2.0, by + bh / 2.0
+            for px, py, pw, ph in prev:
+                pcx, pcy = px + pw / 2.0, py + ph / 2.0
+                tol = max(bw, bh, pw, ph) * 0.75
+                if abs(bcx - pcx) <= tol and abs(bcy - pcy) <= tol:
+                    return True
+        return False
+
+    def detect(self, frame_bgr: np.ndarray) -> bool:
+        """带时序确认的判定：**同一位置**连续 confirm_frames 帧命中才返回 True。
+
+        相较旧版「连续命中即可」，这里额外要求命中位置稳定：目标在总览里静止，位置
+        漂移（移动的目标、不同位置轮流出现的噪声、总览滚动）会被视为新目标而重新累计。
         同时记录本次候选框（原分辨率）到 last_boxes，供预览叠加显示。
         """
         boxes = self.red_boxes(frame_bgr)
@@ -241,8 +268,15 @@ class Detector:
         self.last_boxes = [
             (x * scale, y * scale, w * scale, h * scale) for x, y, w, h in boxes
         ]
-        if boxes:
-            self._confirm_count += 1
-        else:
+        if not boxes:
             self._confirm_count = 0
+            self._prev_boxes = []
+            return False
+        if self._prev_boxes and not self._overlaps_previous(boxes, self._prev_boxes):
+            # 命中位置发生变化：作为新位置的首帧重新累计
+            self._confirm_count = 1
+        else:
+            # 首帧命中，或与上一帧同一位置延续
+            self._confirm_count += 1
+        self._prev_boxes = boxes
         return self._confirm_count >= self.confirm_frames

@@ -190,7 +190,7 @@ class Detector:
 - **灰白「行首图标」判定**：名字文字是一串，每个字**同行左侧**必有前一个字或图标；真正的阵营图标位于行首、左侧空白。`_candidate_boxes` 对灰白检测启用 `left_clear=True`，用 `_has_left_content` 检查色块同行左侧是否已有同色内容，有则判为名字文字剔除，进一步抑制极小字体名字形成的紧凑色块而不影响行首图标。
 - `need_name`：两级自适应名字验证。若帧内存在某图标带「对齐的明亮名字文字」（V ≥ `name_v`），则只保留此类图标，剔除背景中颜色相近但非玩家条目的干扰（如红色恒星）；若整帧都没有名字（纯图标 ROI），则退化为仅凭几何判定，无名字参考也能识别。带宽 / 带高随图标尺寸缩放以匹配对齐。
 - **彩色与灰白分开建掩码检测**（`_mask_for` 按颜色子集建掩码、`_candidate_boxes` 按指定填充率筛块），两组结果按颜色互斥直接拼接，避免不同填充率互相干扰。
-- `detect` 传入后维护连续命中计数，连续 `confirm_frames` 帧命中才返回 True；同时把候选框乘以 `downscale` 写回 `last_boxes`（原分辨率）供预览叠加。
+- `detect` 传入后维护**同一位置**的连续命中计数：把本帧候选框与上一帧 `_prev_boxes` 做位置匹配（`_overlaps_previous`，中心偏移不超过框尺寸 75% 视为同一位置）。首帧命中或同一位置延续则计数 +1；未命中或位置跳变（总览滚动、不同位置轮流出现的噪声）则重置。连续 `confirm_frames` 帧同一位置命中才返回 True（默认 3 帧，@6fps≈0.5s）；同时把候选框乘以 `downscale` 写回 `last_boxes`（原分辨率）供预览叠加。
 
 ### 3.7 alerter（警报）
 
@@ -306,7 +306,14 @@ function _candidate_boxes(mask, v_chan, min_fill):
 function detect(frame_bgr):
     boxes = red_boxes(frame_bgr)
     last_boxes = 各框 × downscale                          # 原分辨率，供预览叠加
-    连续 confirm_frames 帧 boxes 非空 → True，否则累加/清零计数
+    if boxes 为空:
+        计数清零；prev_boxes 清空；return False
+    if prev_boxes 非空 且 与 boxes 无「同一位置」重叠:
+        计数 = 1                                            # 位置跳变 → 作为新位置首帧
+    else:
+        计数 += 1                                           # 首帧命中 或 同一位置延续
+    prev_boxes = boxes
+    return 计数 >= confirm_frames                           # 默认 3 帧，@6fps≈0.5s
 ```
 
 ---

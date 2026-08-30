@@ -141,6 +141,38 @@ class TestDetectorTemporal:
         d.reset()
         assert not d.detect(frame)  # 计数清空，重新累计
 
+    def test_position_change_resets_counter(self):
+        # 同一位置连续 3 帧才触发；位置跳变（如总览滚动 / 不同位置轮流出现）重新累计
+        d = Detector(confirm_frames=3)
+
+        def frame_at(x):
+            f = _frame()
+            _icon(f, RED, x=x, y=100)
+            _name(f, x=x + 15 + 6, y=100)
+            return f
+
+        a, b = frame_at(50), frame_at(250)
+        assert not d.detect(a)  # A 第 1 帧
+        assert not d.detect(a)  # A 第 2 帧
+        assert not d.detect(b)  # 位置跳到 B → 重置为 B 第 1 帧
+        assert not d.detect(b)  # B 第 2 帧
+        assert d.detect(b)      # B 第 3 帧触发
+
+    def test_alternating_positions_never_trigger(self):
+        # 两个位置轮流命中（位置不稳定）不应累计到触发阈值
+        d = Detector(confirm_frames=3)
+
+        def frame_at(x):
+            f = _frame()
+            _icon(f, RED, x=x, y=100)
+            _name(f, x=x + 15 + 6, y=100)
+            return f
+
+        a, b = frame_at(50), frame_at(250)
+        for _ in range(10):
+            assert not d.detect(a)
+            assert not d.detect(b)
+
 
 class TestDetectorMask:
     def test_red_mask_shape_matches_downscaled(self):

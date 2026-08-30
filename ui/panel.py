@@ -14,8 +14,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRect, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QImage
+from PySide6.QtCore import QRect, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon, QImage
 from PySide6.QtWidgets import (
     QDialog,
     QGridLayout,
@@ -201,18 +201,17 @@ class ColorPickerDialog(QDialog):
         self.config = config
 
         self.setWindowTitle("颜色选择")
-        self.setMinimumSize(480, 360)
+        self.setFixedSize(480, 380)
         self._build_ui()
 
     # ---- UI ----
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
-        self.status_label = QLabel("勾选需要警报的颜色，识别程度越严格判定越苛刻、误报越少")
+        self.status_label = QLabel("勾选需要警报的颜色\n误报时往严格调，漏报时往宽松调")
         root.addWidget(self.status_label)
 
         # ---- EVE 总览警报颜色选择（仅色块，勾选显示对勾） ----
-        root.addWidget(QLabel("警报颜色（EVE 总览）：勾选需要警报的颜色"))
         palette_grid = QGridLayout()
         palette_grid.setSpacing(6)
         self._color_buttons: dict[str, QPushButton] = {}
@@ -258,7 +257,7 @@ class ColorPickerDialog(QDialog):
         self._update_strictness_label()
 
         btn_row = QHBoxLayout()
-        self.apply_btn = QPushButton("应用并保存")
+        self.apply_btn = QPushButton("应用")
         self.close_btn = QPushButton("关闭")
         self.apply_btn.clicked.connect(self._apply)
         self.close_btn.clicked.connect(self.close)
@@ -314,9 +313,7 @@ class ColorPickerDialog(QDialog):
         det["colors"] = self._active_colors()
         det["strictness"] = self.strictness_slider.value()
         self.config.update("detection", det)
-        active = "、".join(EVE_COLORS[c]["label"] for c in det["colors"])
-        level = "宽松" if det["strictness"] <= 33 else ("适中" if det["strictness"] <= 66 else "严格")
-        self.status_label.setText(f"已保存：警报颜色 {active}，识别程度 {level}（{det['strictness']}）")
+        self.status_label.setText("已应用")
 
 
 class PreviewDialog(QDialog):
@@ -337,6 +334,7 @@ class PreviewDialog(QDialog):
         )
         self._detector = Detector(**config.data["detection"])
         self._det_cfg_key: str | None = None
+        self._win_cfg_key: str | None = None
         self._win = None
         self._tick_count = 0
         self._last_status = time.perf_counter()
@@ -344,10 +342,11 @@ class PreviewDialog(QDialog):
 
         self.setWindowTitle("预警预览")
         self.setMinimumSize(480, 320)
+        self._saved_geometry: QRect | None = None  # 临时保存上次打开的大小 / 位置
         self._build_ui()
 
         self._timer = QTimer(self)
-        self._timer.setInterval(100)  # 10 FPS 预览
+        self._timer.setInterval(167)  # ~6 FPS 预览（低帧率优化性能）
         self._timer.timeout.connect(self._tick)
 
     # ---- UI ----
@@ -376,6 +375,16 @@ class PreviewDialog(QDialog):
             if key != self._det_cfg_key:
                 self._detector = Detector(**self.config.data["detection"])
                 self._det_cfg_key = key
+
+            # 目标程序变化（重新选择程序）时重建定位器，保持与配置一致
+            win_key = repr(sorted(self.config.data["window"].items()))
+            if win_key != self._win_cfg_key:
+                self._win_cfg_key = win_key
+                self._locator = WindowLocator(
+                    title_keyword=self.config.data["window"].get("title_keyword"),
+                    process_name=self.config.data["window"].get("process_name"),
+                )
+                self._win = None  # 强制下一帧重新定位到新程序
 
             if self._win is None or self._tick_count % REFRESH_GEOMETRY_EVERY == 0:
                 self._win = self._locator.find()
@@ -411,12 +420,31 @@ class PreviewDialog(QDialog):
             self._win = None  # 窗口可能已关闭，下一帧重新定位
             self.status_label.setText(f"无法定位目标程序窗口：{exc}")
 
+    def show(self) -> None:
+        """打开时恢复上次关闭前的大小与位置（重新选择程序后由 reset_geometry 清除）。"""
+        if self._saved_geometry is not None:
+            self.setGeometry(self._saved_geometry)
+        super().show()
+
+    def reset_geometry(self) -> None:
+        """重新选择目标程序后，预览窗口恢复默认大小并居中于主面板。"""
+        self._saved_geometry = None
+        self.resize(self.minimumSize())
+        parent = self.parentWidget()
+        if parent is not None:
+            geo = parent.geometry()
+            self.move(
+                max(0, geo.x() + (geo.width() - self.width()) // 2),
+                max(0, geo.y() + (geo.height() - self.height()) // 2),
+            )
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if not self._timer.isActive():
             self._timer.start()
 
     def closeEvent(self, event) -> None:
+        self._saved_geometry = self.geometry()
         self._timer.stop()
         self._capture.close()
         super().closeEvent(event)
@@ -493,6 +521,16 @@ class ControlPanel(QWidget):
         opt_row.addWidget(self.preview_btn)
         opt_row.addWidget(self.test_btn)
         opt_row.addStretch()
+        # 最右侧 GitHub 图标：点击打开项目仓库
+        self.github_btn = QPushButton()
+        self.github_btn.setIcon(QIcon(str(self._root / "assets" / "github.svg")))
+        self.github_btn.setIconSize(QSize(20, 20))
+        self.github_btn.setFixedSize(28, 28)
+        self.github_btn.setFlat(True)
+        self.github_btn.setToolTip("GitHub 仓库")
+        self.github_btn.setCursor(Qt.PointingHandCursor)
+        self.github_btn.clicked.connect(self._open_github)
+        opt_row.addWidget(self.github_btn)
         root.addLayout(opt_row)
 
         self.start_btn.clicked.connect(self._toggle_monitor)
@@ -567,6 +605,9 @@ class ControlPanel(QWidget):
         if win.process_name:
             update["process_name"] = win.process_name
         self.config.update("window", update)
+        # 重新选择程序后，预览窗口恢复默认大小与位置
+        if self._preview_dialog is not None:
+            self._preview_dialog.reset_geometry()
 
         try:
             win = self._make_locator().find()
@@ -781,6 +822,10 @@ class ControlPanel(QWidget):
         self._preview_dialog.show()
         self._preview_dialog.raise_()
         self._preview_dialog.activateWindow()
+
+    def _open_github(self) -> None:
+        """打开项目 GitHub 仓库。"""
+        QDesktopServices.openUrl(QUrl("https://github.com/ruanpy-1104/eve-local-alert"))
 
     def _test_alert(self) -> None:
         """测试警报音：循环播放 1.5 秒后停止。"""

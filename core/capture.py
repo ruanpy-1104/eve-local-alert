@@ -86,17 +86,22 @@ class Capture:
         frame = self._printwindow_capture(hwnd)
         if frame is not None:
             return self._crop(frame, region)
-        # 回退：按屏幕坐标捕获（PrintWindow 失效的独占全屏等场景）
-        left, top, right, bottom = win32gui.GetClientRect(hwnd)
-        ox, oy = win32gui.ClientToScreen(hwnd, (left, top))
-        screen_region = {
-            "left": ox + region["left"],
-            "top": oy + region["top"],
-            "width": region["width"],
-            "height": region["height"],
-        }
-        shot = self._sct.grab(screen_region)
-        return np.asarray(shot)[:, :, :3]
+        # 回退：按屏幕坐标捕获（PrintWindow 失效的独占全屏等场景）。
+        # 句柄可能已失效 / 区域尺寸非法（mss 抛 ScreenShotError），统一视为捕获失败返回 None，
+        # 由上层跳过本帧或重新定位窗口。
+        try:
+            left, top, right, bottom = win32gui.GetClientRect(hwnd)
+            ox, oy = win32gui.ClientToScreen(hwnd, (left, top))
+            screen_region = {
+                "left": ox + region["left"],
+                "top": oy + region["top"],
+                "width": region["width"],
+                "height": region["height"],
+            }
+            shot = self._sct.grab(screen_region)
+            return np.asarray(shot)[:, :, :3]
+        except Exception:
+            return None
 
     @staticmethod
     def _crop(frame: np.ndarray, region: dict[str, int]) -> np.ndarray:

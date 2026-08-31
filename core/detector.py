@@ -97,6 +97,11 @@ class Detector:
         hi = self.max_area if self.max_area is not None else max(lo + 1, area // 2)
         return max(1, int(lo)), max(int(lo) + 1, int(hi))
 
+    def _downscaled_dims(self, h: int, w: int) -> tuple[int, int]:
+        """下采样后的帧尺寸。极小帧（如 2×2 选区）无法再缩小，直接返回原尺寸。"""
+        ds = max(1, self.downscale)
+        return max(1, h // ds), max(1, w // ds)
+
     def _has_aligned_name(
         self, v_chan: np.ndarray, x: int, y: int, w: int, h: int, img_h: int, w_max: int
     ) -> bool:
@@ -123,7 +128,7 @@ class Detector:
         # 下采样：极小帧（如 2×2 选区）无法再缩小，跳过 resize 避免目标尺寸为 0 报错
         if self.downscale > 1:
             h, w = frame_bgr.shape[:2]
-            th, tw = max(1, h // self.downscale), max(1, w // self.downscale)
+            th, tw = self._downscaled_dims(h, w)
             if (th, tw) != (h, w):
                 frame_bgr = cv2.resize(
                     frame_bgr,
@@ -264,7 +269,9 @@ class Detector:
         同时记录本次候选框（原分辨率）到 last_boxes，供预览叠加显示。
         """
         boxes = self.red_boxes(frame_bgr)
-        scale = self.downscale
+        # 实际缩放比例：极小帧跳过 resize 时框已位于原分辨率，不可再乘缩放因子
+        h, w = frame_bgr.shape[:2]
+        scale = self.downscale if self._downscaled_dims(h, w) != (h, w) else 1
         self.last_boxes = [
             (x * scale, y * scale, w * scale, h * scale) for x, y, w, h in boxes
         ]

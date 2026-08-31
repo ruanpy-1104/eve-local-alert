@@ -104,6 +104,7 @@ class MonitorWorker(QThread):
     status = Signal(str)      # 状态文本
     error = Signal(str)       # 致命错误
     alert_paused = Signal(bool)  # 播报暂停状态：True=已暂停，False=红名离开自动恢复
+    window_lost = Signal(str)    # 目标窗口已关闭：监控结束，面板退回未选择状态
 
     def __init__(self, config: ConfigManager, root_dir: Path, parent=None):
         super().__init__(parent)
@@ -111,6 +112,8 @@ class MonitorWorker(QThread):
         self._root = root_dir
         self._stop = threading.Event()
         self._paused = threading.Event()  # 播报暂停：命中不报警，红名离开自动恢复
+        self._alerting = False  # 当前是否正在播放警报（供 UI 线程只读查询）
+        self._window_lost = False  # 目标窗口已关闭（抑制 run() 的"已停止"状态覆盖）
 
     def stop(self) -> None:
         self._stop.set()
@@ -125,11 +128,21 @@ class MonitorWorker(QThread):
     def is_paused(self) -> bool:
         return self._paused.is_set()
 
+    def is_alerting(self) -> bool:
+        """当前是否正在播放警报（UI 线程读取，布尔赋值在 GIL 下原子）。"""
+        return self._alerting
+
+    def _notify_window_lost(self) -> None:
+        """目标窗口已关闭：置位标志并通知面板退回「未选择目标」状态。"""
+        self._window_lost = True
+        self.window_lost.emit("目标程序窗口已关闭，请重新选择目标程序")
+
     def run(self) -> None:
         try:
             self._loop()
-            # 仅自然结束时覆盖状态；手动停止由面板自行设置后续状态，避免竞态覆盖
-            if not self._stop.is_set():
+            # 仅自然结束时覆盖状态；手动停止 / 目标窗口关闭由面板自行设置后续状态，
+            # 避免竞态覆盖。
+            if not self._stop.is_set() and not self._window_lost:
                 self.status.emit("已停止")
         except Exception as exc:  # noqa: BLE001
             logger.error("监控线程异常：%s", exc, exc_info=True)
@@ -151,14 +164,18 @@ class MonitorWorker(QThread):
         capture = Capture()
         detector: Detector | None = None
         det_cfg_key: str | None = None
-        alerting = False
         hit_count = 0
         frame_count = 0
         last_status = time.perf_counter()
         status_frames = 0
         minimized_reported = False
         try:
-            win = locator.find()  # 未命中抛 RuntimeError，由 run() 上报
+            # 定位失败（目标尚未打开 / 已关闭）：结束监控，由面板引导重新选择
+            try:
+                win = locator.find()
+            except RuntimeError:
+                self._notify_window_lost()
+                return
             while not self._stop.is_set():
                 started = time.perf_counter()
 
@@ -168,13 +185,26 @@ class MonitorWorker(QThread):
                     detector = Detector(**cfg["detection"])
                     det_cfg_key = key
 
-                if frame_count % REFRESH_GEOMETRY_EVERY == 0:
-                    win = locator.find()  # 窗口移动 / 缩放后自动跟随
+                # 目标窗口可能已被关闭（枚举不到 / 句柄失效抛异常）：统一在此重新定位，
+                # 仍失败则视为目标窗口关闭，结束监控由面板引导重新选择。
+                try:
+                    if frame_count % REFRESH_GEOMETRY_EVERY == 0:
+                        win = locator.find()  # 窗口移动 / 缩放后自动跟随
+                    minimized = is_minimized(win.handle)
+                    cw, ch = client_size(win.handle)
+                except Exception:
+                    try:
+                        win = locator.find()
+                        minimized = is_minimized(win.handle)
+                        cw, ch = client_size(win.handle)
+                    except Exception:
+                        self._notify_window_lost()
+                        break
 
                 # 目标窗口最小化：暂停捕获与检测，等待恢复（不中断监控）
-                if is_minimized(win.handle):
-                    if alerting:
-                        alerting = False
+                if minimized:
+                    if self._alerting:
+                        self._alerting = False
                         alerter.stop()
                     if not minimized_reported:
                         minimized_reported = True
@@ -184,7 +214,6 @@ class MonitorWorker(QThread):
                     continue
                 minimized_reported = False
 
-                cw, ch = client_size(win.handle)
                 roi = ROI(**cfg["roi"])
                 region = roi.to_capture_region(0, 0, cw, ch)
                 frame = capture.grab_window(win.handle, region)
@@ -197,18 +226,18 @@ class MonitorWorker(QThread):
                 # 播报暂停时：即使命中也不报警；红名离开（未命中）后自动恢复预警。
                 hit = detector.detect(frame)
                 if hit:
-                    if not alerting and not self._paused.is_set():
-                        alerting = True
+                    if not self._alerting and not self._paused.is_set():
+                        self._alerting = True
                         alerter.start()
                         hit_count += 1
                         self.detected.emit()
-                    elif alerting and self._paused.is_set():
+                    elif self._alerting and self._paused.is_set():
                         # 用户暂停时警报仍在播放中 → 立即停止
-                        alerting = False
+                        self._alerting = False
                         alerter.stop()
-                elif alerting or self._paused.is_set():
-                    if alerting:
-                        alerting = False
+                elif self._alerting or self._paused.is_set():
+                    if self._alerting:
+                        self._alerting = False
                         alerter.stop()
                     if self._paused.is_set():
                         # 红名离开：自动恢复预警，下次命中重新报警
@@ -394,6 +423,7 @@ class PreviewDialog(QDialog):
         self.config = config
         self._root = root_dir
         self._capture = Capture()
+        self._capture_closed = False  # closeEvent 后置位，下次打开时重建捕获实例
         self._locator = WindowLocator(
             title_keyword=config.data["window"].get("title_keyword"),
             process_name=config.data["window"].get("process_name"),
@@ -510,6 +540,11 @@ class PreviewDialog(QDialog):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        # 关闭后重新打开：底层 mss 实例已在 closeEvent 中释放，必须重建，
+        # 否则独占全屏（PrintWindow 失效）回退到 mss 抓屏时会操作已释放的句柄。
+        if self._capture_closed:
+            self._capture = Capture()
+            self._capture_closed = False
         if not self._timer.isActive():
             self._timer.start()
 
@@ -517,6 +552,7 @@ class PreviewDialog(QDialog):
         self._saved_geometry = self.geometry()
         self._timer.stop()
         self._capture.close()
+        self._capture_closed = True
         super().closeEvent(event)
 
 
@@ -746,7 +782,6 @@ class ControlPanel(QWidget):
             self.preview.clear()
             self.preview.set_placeholder("目标窗口已最小化，请恢复窗口")
             return
-        rect = self._sel_target.rect
         cw, ch = client_size(self._sel_target.handle)
         self._set_program_aspect(cw, ch)
         region = {"left": 0, "top": 0, "width": cw, "height": ch}
@@ -827,6 +862,7 @@ class ControlPanel(QWidget):
         self._worker.detected.connect(self._on_detected)
         self._worker.error.connect(self._on_error)
         self._worker.alert_paused.connect(self._on_alert_paused)
+        self._worker.window_lost.connect(self._on_window_lost)
         self._worker.start()
         self.start_btn.setText("停止预警")
         # 每次启动监控重置播报暂停状态
@@ -867,6 +903,17 @@ class ControlPanel(QWidget):
         )
         self.status_label.setText(f"错误：{message}")
         self.start_btn.setText("开始预警")
+        self.pause_btn.setEnabled(False)
+
+    def _on_window_lost(self, message: str) -> None:
+        """目标窗口已关闭：退回「未选择目标」界面，引导用户重新选择程序后开始预警。"""
+        logger.warning("监控目标窗口已关闭：%s", message)
+        self.status_label.setStyleSheet("")
+        self.status_label.setText("目标程序窗口已关闭，请点击「选择程序」重新选择，再点击「开始预警」")
+        self.preview.clear()
+        self.preview.set_placeholder("实时预览：选择目标程序后自动进入框选模式")
+        self.start_btn.setText("开始预警")
+        self.pause_btn.setEnabled(False)
 
     # ---- 播报暂停 ----
     def _on_pause_toggled(self, checked: bool) -> None:
@@ -916,6 +963,15 @@ class ControlPanel(QWidget):
 
     def _test_alert(self) -> None:
         """测试警报音：循环播放 1.5 秒后停止。"""
+        if (
+            self._worker is not None
+            and self._worker.isRunning()
+            and self._worker.is_alerting()
+        ):
+            # 监控警报正在播放：PlaySound(SND_PURGE) 按进程停止所有声音，
+            # 会误杀监控警报且其 _alerting 状态不会自动恢复，故此时禁止测试。
+            self.status_label.setText("监控警报正在播放，请先「暂停预警」再测试")
+            return
         sound_file = self.config.data["alert"].get("sound_file")
         path = str((self._root / sound_file).resolve()) if sound_file else None
         alerter = Alerter(path)

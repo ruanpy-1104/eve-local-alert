@@ -10,6 +10,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
 # 默认配置：旧版 config.json 缺字段时，通过深度合并自动补全
 DEFAULT_CONFIG: dict[str, Any] = {
     "window": {"title_keyword": "EVE", "process_name": "exefile.exe"},
@@ -57,9 +61,14 @@ class ConfigManager:
     def _load(self) -> dict:
         if not self.path.exists():
             return copy.deepcopy(DEFAULT_CONFIG)
-        with open(self.path, encoding="utf-8") as f:
-            loaded = json.load(f)
-        data = _deep_merge(DEFAULT_CONFIG, loaded)
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                loaded = json.load(f)
+            data = _deep_merge(DEFAULT_CONFIG, loaded)
+        except Exception:
+            # 配置文件损坏 / 不可读 / 结构非法时回退默认配置，避免启动即崩溃
+            logger.error("config.json 读取失败，使用默认配置", exc_info=True)
+            return copy.deepcopy(DEFAULT_CONFIG)
         if isinstance(data.get("detection"), dict):
             _normalize_detection(data["detection"])
         return data
@@ -71,8 +80,13 @@ class ConfigManager:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
 
     def update(self, section: str, values: dict[str, Any]) -> None:
-        """更新某个配置节（如 detection / alert / roi）并立即持久化。"""
-        if section not in self.data or not isinstance(self.data[section], dict):
-            self.data[section] = {}
-        self.data[section].update(values)
+        """更新某个配置节（如 detection / alert / roi）并立即持久化。
+
+        以「整体替换配置节」的方式写入：工作线程持有顶层 data 引用，替换是
+        原子的引用赋值，避免 UI 线程与监控线程并发读写同一嵌套 dict。
+        """
+        current = self.data.get(section)
+        merged = dict(current) if isinstance(current, dict) else {}
+        merged.update(values)
+        self.data[section] = merged
         self.save()

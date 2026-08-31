@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import os
 import sys
 import time
 from pathlib import Path
@@ -15,10 +14,6 @@ from core.logger import get_logger, setup_logging
 from core.paths import app_dir, assets_dir
 
 logger = get_logger(__name__)
-
-# Qt6 关闭高 DPI 坐标缩放，使 Qt 坐标与 win32 屏幕物理像素一致，
-# 保证遮罩框选 / 窗口矩形 / 捕获区域三者坐标同源不偏移。
-os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
 
 CONFIG_PATH = app_dir() / "config.json"
 
@@ -46,7 +41,7 @@ def run_headless(config_path: Path) -> None:
     from core.config import ConfigManager
     from core.detector import Detector
     from core.region_selector import ROI
-    from core.window_locator import WindowLocator
+    from core.window_locator import WindowLocator, is_minimized
 
     cfg = ConfigManager(config_path)
     locator = WindowLocator(
@@ -65,12 +60,27 @@ def run_headless(config_path: Path) -> None:
     interval = 1.0 / cfg.data["loop"].get("fps", 12)
 
     alerting = False
+    frame_count = 0
     try:
         while True:
             started = time.perf_counter()
+            # 目标窗口最小化：无法捕获内容，暂停检测与警报，等待恢复
+            if is_minimized(win.handle):
+                if alerting:
+                    alerting = False
+                    alerter.stop()
+                time.sleep(interval)
+                continue
             cw, ch = client_size(win.handle)
+            if cw <= 0 or ch <= 0:
+                time.sleep(interval)
+                continue
             region = roi.to_capture_region(0, 0, cw, ch)
             frame = capture.grab_window(win.handle, region)
+            if frame is None or frame.size == 0:
+                # 捕获失败（异常状态）：跳过本帧，不中断闭环
+                time.sleep(interval)
+                continue
             if detector.detect(frame):
                 if not alerting:
                     alerting = True
@@ -78,6 +88,13 @@ def run_headless(config_path: Path) -> None:
             elif alerting:
                 alerting = False
                 alerter.stop()
+            frame_count += 1
+            if frame_count % 30 == 0:
+                try:
+                    win = locator.find()  # 跟随窗口移动 / 缩放
+                except RuntimeError as exc:
+                    logger.error("目标窗口已关闭：%s", exc)
+                    break
             time.sleep(max(0.0, interval - (time.perf_counter() - started)))
     except KeyboardInterrupt:
         pass

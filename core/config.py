@@ -25,7 +25,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "colors": ["red", "orange_red", "orange", "gray_white"],
         "strictness": 50,
     },
-    "alert": {"sound_file": "assets/alert.wav"},
+    "alert": {
+        "sound_file": "assets/alert.wav",
+        # 暂停预警后目标「连续未出现」多少秒才自动恢复（0 表示黑屏即恢复）
+        "resume_delay": 10,
+    },
     "loop": {"fps": 6},
     "logging": {"level": "error", "file": "logs/eve-alert.log"},
 }

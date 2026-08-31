@@ -190,7 +190,7 @@ class Detector:
 - **灰白「行首图标」判定**：名字文字是一串，每个字**同行左侧**必有前一个字或图标；真正的阵营图标位于行首、左侧空白。`_candidate_boxes` 对灰白检测启用 `left_clear=True`，用 `_has_left_content` 检查色块同行左侧是否已有同色内容，有则判为名字文字剔除，进一步抑制极小字体名字形成的紧凑色块而不影响行首图标。
 - `need_name`：两级自适应名字验证。若帧内存在某图标带「对齐的明亮名字文字」（V ≥ `name_v`），则只保留此类图标，剔除背景中颜色相近但非玩家条目的干扰（如红色恒星）；若整帧都没有名字（纯图标 ROI），则退化为仅凭几何判定，无名字参考也能识别。带宽 / 带高随图标尺寸缩放以匹配对齐。
 - **彩色与灰白分开建掩码检测**（`_mask_for` 按颜色子集建掩码、`_candidate_boxes` 按指定填充率筛块），两组结果按颜色互斥直接拼接，避免不同填充率互相干扰。
-- `detect` 传入后维护**同一位置**的连续命中计数：把本帧候选框与上一帧 `_prev_boxes` 做位置匹配（`_overlaps_previous`，中心偏移不超过框尺寸 75% 视为同一位置）。首帧命中或同一位置延续则计数 +1；未命中或位置跳变（总览滚动、不同位置轮流出现的噪声）则重置。连续 `confirm_frames` 帧同一位置命中才返回 True（默认 3 帧，@6fps≈0.5s）；同时把候选框乘以 `downscale` 写回 `last_boxes`（原分辨率）供预览叠加。
+- `detect` 传入后维护**同一位置**的连续命中计数：把本帧候选框与上一帧 `_prev_boxes` 做位置匹配（`_overlaps_previous`，中心偏移不超过框尺寸 75% 视为同一位置）。首帧命中或同一位置延续则计数 +1；未命中或位置跳变（总览滚动、不同位置轮流出现的噪声）则重置。连续 `confirm_frames` 帧同一位置命中才返回 True（默认 3 帧，@6fps≈0.5s）；同时把候选框乘以下采样比例写回 `last_boxes`（原分辨率）供预览叠加——极小帧（不足 2×downscale）跳过 resize 时实际未下采样，此时不缩放。
 
 ### 3.7 alerter（警报）
 
@@ -198,11 +198,11 @@ class Detector:
 class Alerter:
     def __init__(self, sound_file: str | None = None): ...
     def is_active(self) -> bool: ...
-    def start(self) -> None: ...   # SND_LOOP 循环播放；无文件回退 Beep；播放失败不抛异常
-    def stop(self) -> None: ...    # SND_PURGE 停止
+    def start(self) -> None: ...   # 播放一个完整周期（wav 时长），周期结束仍警报则续播；无文件回退 Beep；失败不抛异常
+    def stop(self) -> None: ...    # 置停止标志，当前周期自然放完即停（不用 SND_PURGE 截断）
 ```
 
-- 识别到目标即 `start`，目标消失即 `stop`（无冷却）；播放失败保持尽力而为，不中断监控。
+- 识别到目标即 `start`，目标消失即 `stop`（无冷却）；播放失败保持尽力而为，不中断监控。周期时长经 `wave` 模块读取 wav 头得出，解析失败时回退 1.0s。
 
 ### 3.8 logger（日志）
 
@@ -246,7 +246,7 @@ interval = 1 / config.loop.fps
 loop until stop_requested:
     started = now()
     if is_minimized(win.handle):
-        停止警报；上报状态「目标窗口已最小化」；sleep；continue
+        停止警报；上报状态「目标窗口已最小化」并提醒玩家（提示音 + 面板置顶）；sleep；continue
     frame = capture.grab_window(win.handle, roi.to_capture_region(...))
     if detector.detect(frame):
         alerter.start()
@@ -305,7 +305,7 @@ function _candidate_boxes(mask, v_chan, min_fill):
 
 function detect(frame_bgr):
     boxes = red_boxes(frame_bgr)
-    last_boxes = 各框 × downscale                          # 原分辨率，供预览叠加
+    last_boxes = 各框 × 实际缩放比例（极小帧未下采样则不缩放）    # 原分辨率，供预览叠加
     if boxes 为空:
         计数清零；prev_boxes 清空；return False
     if prev_boxes 非空 且 与 boxes 无「同一位置」重叠:
@@ -323,9 +323,9 @@ function detect(frame_bgr):
 监控逻辑运行在**后台监控线程**（`QThread` 子类 `MonitorWorker`，见 `ui/panel.py`），避免阻塞 UI 事件循环：
 
 - 工作线程独立完成「捕获 → 检测 → 警报」，通过 Qt 信号上报状态 / 预览帧。
-- **最小化降级：** 目标窗口最小化（`IsIconic`）时暂停捕获并停止警报，经状态信号提示「目标窗口已最小化，无法监控，请恢复窗口」，恢复后自动继续——监控流程不被中断。
+- **最小化降级：** 目标窗口最小化（`IsIconic`）时暂停捕获并停止警报，经状态信号提示「目标窗口已最小化，无法监控，请恢复窗口」，同时播放一次提示音并置顶面板提醒玩家（仅最小化场景触发；窗口关闭走「目标窗口已关闭 → 退回未选择状态」流程，不加提示音），恢复后自动继续——监控流程不被中断。
 - **竞态处理：** 手动停止监控时由面板置停止标志并等待线程退出，`run()` 仅在自然退出时发送「已停止」信号，避免手动停止与自然结束竞态覆盖状态。
-- **预警暂停：** 面板「暂停预警」按钮（checkable）经线程安全的 `set_paused()` 置位。暂停期间即使命中也不播放警报；红名离开（未命中）后工作线程自动清除暂停并发出 `alert_paused(False)`，面板同步复位按钮，下次命中恢复报警。
+- **预警暂停：** 面板「暂停预警」按钮（checkable）经线程安全的 `set_paused()` 置位。暂停期间即使命中也不播放警报；目标**连续未出现**达设定延时（`alert.resume_delay`，默认 10 秒，可在「暂停设置」调整，0 秒为不延时）后工作线程自动清除暂停并发出 `alert_paused(False)`，面板同步复位按钮，下次命中恢复报警——防抖避免进出空间站等短暂黑屏（数秒无检测）误解除暂停。
 - **独立预览窗口（`PreviewDialog`）：** 与监控线程独立的另一套捕获 + 检测循环（6 FPS 定时器），在独立窗口叠加识别框并显示命中状态 / FPS；检测参数变化时自动重建 `Detector` 保持与配置一致。窗口非模态，可保留在旁同时操作主面板。
 - 预览帧在捕获成功后经信号发送；捕获失败发 `None` 触发占位提示。
 

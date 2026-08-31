@@ -34,6 +34,20 @@ def _set_dpi_awareness() -> None:
             pass
 
 
+def _set_app_user_model_id() -> None:
+    """设置 Windows 任务栏应用 ID。
+
+    无 AppUserModelID 时（尤其开发模式 python 直跑），Windows 任务栏按 exe 分组并
+    显示 python 图标；设置后任务栏正确使用窗口图标并独立分组。需在窗口创建前调用。
+    """
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EveLocalAlert.1")
+    except Exception:
+        pass
+
+
 def run_headless(config_path: Path) -> None:
     """无 UI 最小闭环：定位窗口 -> 捕获 -> 检测 -> 警报。"""
     from core.alerter import Alerter
@@ -124,7 +138,8 @@ def run_ui(config_path: Path) -> int:
 def _app_icon():
     from PySide6.QtGui import QIcon
 
-    icon = QIcon(str(assets_dir() / "assets" / "logo.png"))
+    # 窗口 / 任务栏图标用多分辨率 ICO（16–256px），比 PNG 在 Windows 上更稳
+    icon = QIcon(str(assets_dir() / "assets" / "logo.ico"))
     return icon if not icon.isNull() else QIcon()
 
 
@@ -141,6 +156,7 @@ def _install_crash_logging() -> None:
 
 def main() -> None:
     _set_dpi_awareness()
+    _set_app_user_model_id()
     # 用配置初始化日志（仅记录异常 / 崩溃；级别 / 文件路径可经 config.json 的 logging 段调整）
     cfg = ConfigManager(CONFIG_PATH)
     log_cfg = cfg.data.get("logging", {})

@@ -21,7 +21,8 @@
     "strictness": 50
   },
   "alert": {
-    "sound_file": "assets/alert.wav"
+    "sound_file": "assets/alert.wav",
+    "resume_delay": 10
   },
   "loop": {
     "fps": 6

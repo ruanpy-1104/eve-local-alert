@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
+import winsound
 from pathlib import Path
 
 import cv2
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -105,6 +107,7 @@ class MonitorWorker(QThread):
     error = Signal(str)       # 致命错误
     alert_paused = Signal(bool)  # 播报暂停状态：True=已暂停，False=红名离开自动恢复
     window_lost = Signal(str)    # 目标窗口已关闭：监控结束，面板退回未选择状态
+    window_minimized = Signal()  # 目标窗口已最小化：提醒玩家恢复窗口
 
     def __init__(self, config: ConfigManager, root_dir: Path, parent=None):
         super().__init__(parent)
@@ -114,6 +117,7 @@ class MonitorWorker(QThread):
         self._paused = threading.Event()  # 播报暂停：命中不报警，红名离开自动恢复
         self._alerting = False  # 当前是否正在播放警报（供 UI 线程只读查询）
         self._window_lost = False  # 目标窗口已关闭（抑制 run() 的"已停止"状态覆盖）
+        self._paused_miss_start: float | None = None  # 暂停态下连续未命中起始时刻（自动恢复防抖）
 
     def stop(self) -> None:
         self._stop.set()
@@ -124,6 +128,7 @@ class MonitorWorker(QThread):
             self._paused.set()
         else:
             self._paused.clear()
+        self._paused_miss_start = None  # 暂停状态切换时重置自动恢复计时
 
     def is_paused(self) -> bool:
         return self._paused.is_set()
@@ -208,6 +213,7 @@ class MonitorWorker(QThread):
                         alerter.stop()
                     if not minimized_reported:
                         minimized_reported = True
+                        self.window_minimized.emit()  # 提示音 + 面板置顶，提醒玩家恢复窗口
                         self.status.emit("目标窗口已最小化，无法监控，请恢复窗口")
                         self.preview.emit(None)  # 面板显示"已最小化"占位提示
                     time.sleep(interval)
@@ -223,16 +229,18 @@ class MonitorWorker(QThread):
                     continue
 
                 # 连续警报：识别到即持续播放，未识别立即停止（无冷却）。
-                # 播报暂停时：即使命中也不报警；红名离开（未命中）后自动恢复预警。
+                # 播报暂停时：即使命中也不报警；目标持续未出现达到设置延时后才自动恢复
+                # （进出站黑屏等短暂无检测不会误解除暂停）。
                 hit = detector.detect(frame)
                 if hit:
+                    self._paused_miss_start = None  # 目标仍在视野：重置无目标计时
                     if not self._alerting and not self._paused.is_set():
                         self._alerting = True
                         alerter.start()
                         hit_count += 1
                         self.detected.emit()
                     elif self._alerting and self._paused.is_set():
-                        # 用户暂停时警报仍在播放中 → 立即停止
+                        # 用户暂停时警报仍在播放中 → 停止（当前周期自然放完）
                         self._alerting = False
                         alerter.stop()
                 elif self._alerting or self._paused.is_set():
@@ -240,9 +248,18 @@ class MonitorWorker(QThread):
                         self._alerting = False
                         alerter.stop()
                     if self._paused.is_set():
-                        # 红名离开：自动恢复预警，下次命中重新报警
-                        self._paused.clear()
-                        self.alert_paused.emit(False)
+                        resume_delay = float(cfg["alert"].get("resume_delay", 10) or 0)
+                        now = time.perf_counter()
+                        if resume_delay <= 0 or (
+                            self._paused_miss_start is not None
+                            and now - self._paused_miss_start >= resume_delay
+                        ):
+                            # 目标已持续离开：自动恢复预警，下次命中重新报警
+                            self._paused_miss_start = None
+                            self._paused.clear()
+                            self.alert_paused.emit(False)
+                        elif self._paused_miss_start is None:
+                            self._paused_miss_start = now
 
                 # 预览叠加检测框，实时反馈识别结果（绿框 = 检测到目标颜色）
                 vis = frame
@@ -411,6 +428,63 @@ class ColorPickerDialog(QDialog):
         self.status_label.setText("已应用")
 
 
+class PauseSettingsDialog(QDialog):
+    """暂停设置：自动恢复延时（暂停后目标连续未出现多少秒才自动解除暂停）。
+
+    进出空间站等操作会造成数秒黑屏（检测不到目标），若恢复无延时会在黑屏瞬间
+    误解除暂停并再次报警；调大延时可避免。设为 0 秒表示不延时（黑屏即恢复）。
+    """
+
+    def __init__(self, config: ConfigManager, parent=None):
+        super().__init__(parent)
+        self.config = config
+
+        self.setWindowTitle("暂停设置 · 自动恢复延时")
+        self.setFixedSize(440, 220)
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(14)
+
+        desc = QLabel("暂停后目标连续未出现多少秒才自动恢复预警")
+        desc.setObjectName("descriptionLabel")
+        desc.setWordWrap(True)
+        root.addWidget(desc)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        lbl = QLabel("自动恢复延时")
+        lbl.setObjectName("subtitleLabel")
+        self.delay_spin = QSpinBox()
+        self.delay_spin.setRange(0, 120)
+        self.delay_spin.setSuffix(" 秒")
+        self.delay_spin.setValue(int(self.config.data["alert"].get("resume_delay", 10)))
+        row.addWidget(lbl)
+        row.addWidget(self.delay_spin)
+        row.addStretch()
+        root.addLayout(row)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self.apply_btn = QPushButton("应用")
+        self.apply_btn.setProperty("role", theme.ROLE_PRIMARY)
+        self.close_btn = QPushButton("关闭")
+        for btn in (self.apply_btn, self.close_btn):
+            btn.setMinimumHeight(36)
+        self.apply_btn.clicked.connect(self._apply)
+        self.close_btn.clicked.connect(self.close)
+        btn_row.addStretch()
+        btn_row.addWidget(self.apply_btn)
+        btn_row.addWidget(self.close_btn)
+        root.addLayout(btn_row)
+
+    def _apply(self) -> None:
+        self.config.update("alert", {"resume_delay": self.delay_spin.value()})
+        self.close()
+
+
 class PreviewDialog(QDialog):
     """独立预警预览窗口：显示框选监控区域画面与识别信息。
 
@@ -516,9 +590,9 @@ class PreviewDialog(QDialog):
                 self._last_status = now
                 state = "检测到目标颜色" if hit else "未检测到目标"
                 self.status_label.setText(f"识别：{state} | {fps:.1f} FPS")
-        except RuntimeError as exc:
+        except RuntimeError:
             self._win = None  # 窗口可能已关闭，下一帧重新定位
-            self.status_label.setText(f"无法定位目标程序窗口：{exc}")
+            self.status_label.setText("无法定位目标程序窗口")
 
     def show(self) -> None:
         """打开时恢复上次关闭前的大小与位置（重新选择程序后由 reset_geometry 清除）。"""
@@ -573,6 +647,8 @@ class ControlPanel(QWidget):
         self._sel_frame: np.ndarray | None = None
         self._sel_done = False
         self._sel_roi: ROI | None = None
+        # 「预览」可用状态：需已选择目标
+        self._has_target = False
 
         # 预览自动适应控件尺寸；监控程序客户区宽高比用于面板等比缩放
         self._prog_aspect = 0.0
@@ -582,12 +658,14 @@ class ControlPanel(QWidget):
         self.setWindowTitle("EVE Local Alert")
         self.setWindowIcon(self._app_icon())
         # 注意：面板不做置顶，不改变其他窗口的 Z 序或前台状态，避免影响其他应用操作。
-        self.setMinimumSize(420, 460)
+        self.setMinimumSize(520, 460)
         self.resize(520, 520)
         self._build_ui()
+        self._update_preview_button()
 
     def _app_icon(self) -> QIcon:
-        icon = QIcon(str(self._root / "assets" / "logo.png"))
+        # 窗口 / 任务栏图标用多分辨率 ICO（16–256px），比 PNG 在 Windows 上更稳
+        icon = QIcon(str(self._root / "assets" / "logo.ico"))
         return icon if not icon.isNull() else QIcon()
 
     # ---- UI ----
@@ -617,7 +695,9 @@ class ControlPanel(QWidget):
         self.pause_btn = QPushButton("暂停预警")
         self.pause_btn.setCheckable(True)
         self.pause_btn.setEnabled(False)
-        self.pause_btn.setToolTip("点击后即使命中也不报警；红名离开后自动恢复预警")
+        self.pause_btn.setToolTip(
+            "点击后即使命中也不报警；目标持续未出现达设定延时后自动恢复（延时可在「暂停设置」调整）"
+        )
         self.target_btn = QPushButton("选择程序")
         # 主功能：更大字号 + 更高按钮，与次要功能拉开明显层次
         row_font = self.start_btn.font()
@@ -634,8 +714,17 @@ class ControlPanel(QWidget):
         self.color_btn = QPushButton("颜色选择")
         self.preview_btn = QPushButton("预览")
         self.test_btn = QPushButton("测试警报音")
+        self.pause_settings_btn = QPushButton("暂停设置")
+        self.pause_settings_btn.setToolTip(
+            "设置暂停预警后自动恢复的延时（目标连续未出现多少秒后自动解除暂停）"
+        )
         # 次要功能统一固定宽度，左侧紧凑排布，避免按钮撑满整行
-        for btn in (self.color_btn, self.preview_btn, self.test_btn):
+        for btn in (
+            self.color_btn,
+            self.preview_btn,
+            self.test_btn,
+            self.pause_settings_btn,
+        ):
             btn.setMinimumHeight(38)
             btn.setFixedWidth(104)
             tool_row.addWidget(btn)
@@ -658,6 +747,7 @@ class ControlPanel(QWidget):
         self.color_btn.clicked.connect(self._open_color_picker)
         self.preview_btn.clicked.connect(self._open_preview)
         self.test_btn.clicked.connect(self._test_alert)
+        self.pause_settings_btn.clicked.connect(self._open_pause_settings)
 
     def _proportional_height(self) -> int:
         """按监控程序宽高比计算目标高度：控件高 + 预览(窗口宽 - 边距)/程序比例。"""
@@ -735,6 +825,8 @@ class ControlPanel(QWidget):
             return None
         cw, ch = client_size(win.handle)
         self._set_program_aspect(cw, ch)
+        self._has_target = True
+        self._update_preview_button()
         self.status_label.setText(f"已选择目标：{win.title}，请在预览画面中框选监控区域")
         return win
 
@@ -863,6 +955,7 @@ class ControlPanel(QWidget):
         self._worker.error.connect(self._on_error)
         self._worker.alert_paused.connect(self._on_alert_paused)
         self._worker.window_lost.connect(self._on_window_lost)
+        self._worker.window_minimized.connect(self._on_window_minimized)
         self._worker.start()
         self.start_btn.setText("停止预警")
         # 每次启动监控重置播报暂停状态
@@ -914,6 +1007,16 @@ class ControlPanel(QWidget):
         self.preview.set_placeholder("实时预览：选择目标程序后自动进入框选模式")
         self.start_btn.setText("开始预警")
         self.pause_btn.setEnabled(False)
+        self._has_target = False
+        self._update_preview_button()
+
+    def _on_window_minimized(self) -> None:
+        """目标窗口最小化：播放提示音并置顶面板提醒玩家（不抢键盘焦点，不提示窗口关闭）。"""
+        try:
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:
+            pass
+        self.raise_()
 
     # ---- 播报暂停 ----
     def _on_pause_toggled(self, checked: bool) -> None:
@@ -928,7 +1031,7 @@ class ControlPanel(QWidget):
         self._worker.set_paused(checked)
         self.pause_btn.setText("预警已暂停" if checked else "暂停预警")
         if checked:
-            self.status_label.setText("预警已暂停：命中不再报警，红名离开后自动恢复")
+            self.status_label.setText("预警已暂停：命中不再报警，目标持续未出现达设定延时后自动恢复")
 
     def _on_alert_paused(self, paused: bool) -> None:
         """工作线程同步暂停状态（红名离开自动恢复时取消按钮勾选）。"""
@@ -949,6 +1052,15 @@ class ControlPanel(QWidget):
         dialog = ColorPickerDialog(self.config, self)
         dialog.exec()
 
+    def _open_pause_settings(self) -> None:
+        """打开暂停设置：自动恢复延时（秒）。"""
+        dialog = PauseSettingsDialog(self.config, self)
+        dialog.exec()
+
+    def _update_preview_button(self) -> None:
+        """「预览」仅在已选择目标时可点击。"""
+        self.preview_btn.setEnabled(self._has_target)
+
     def _open_preview(self) -> None:
         """打开独立预览窗口：显示框选监控区域画面与识别信息。"""
         if self._preview_dialog is None:
@@ -962,7 +1074,7 @@ class ControlPanel(QWidget):
         QDesktopServices.openUrl(QUrl("https://github.com/ruanpy-1104/eve-local-alert"))
 
     def _test_alert(self) -> None:
-        """测试警报音：循环播放 1.5 秒后停止。"""
+        """测试警报音：播放一个完整周期后停止。"""
         if (
             self._worker is not None
             and self._worker.isRunning()
@@ -977,9 +1089,10 @@ class ControlPanel(QWidget):
         alerter = Alerter(path)
         alerter.start()
         self._test_alerter = alerter
-        self.status_label.setText("正在播放警报音（1.5 秒）...")
+        self.status_label.setText("正在播放警报音...")
+        # 略早于周期结束触发 stop：使周期线程判定「已停止」而不续播，正好播放一个完整周期
         QTimer.singleShot(
-            1500,
+            max(200, int(alerter.cycle_seconds * 1000) - 50),
             lambda: (alerter.stop(), self.status_label.setText("警报音测试完成")),
         )
 

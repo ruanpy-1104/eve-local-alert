@@ -1,7 +1,8 @@
 """配置管理模块。
 
 负责 config.json 的读取、与默认值深度合并以及写回，供主入口与控制面板共用。
-所有字段均为本地配置，不含任何网络项。
+所有字段均为本地配置；唯一的网络项是远程预警的 Server酱 SendKey
+（remote_alert.sendkey），仅在用户显式开启远程预警后使用。
 """
 from __future__ import annotations
 
@@ -29,6 +30,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "sound_file": "assets/alert.wav",
         # 暂停预警后目标「连续未出现」多少秒才自动恢复（0 表示黑屏即恢复）
         "resume_delay": 10,
+    },
+    # 远程预警（Server酱 微信推送）：每次启动都重置为关闭（见 _load），
+    # 其余选项（SendKey / 冷却）保留用户最后一次修改。
+    # cooldown_minutes 为可选冷却间隔（分钟）；免费版每日 5 条额度，建议开启冷却
+    "remote_alert": {
+        "enabled": False,
+        "sendkey": "",
+        "cooldown_enabled": False,
+        "cooldown_minutes": 5,
     },
     "loop": {"fps": 6},
     "logging": {"level": "error", "file": "logs/eve-alert.log"},
@@ -75,6 +85,10 @@ class ConfigManager:
             return copy.deepcopy(DEFAULT_CONFIG)
         if isinstance(data.get("detection"), dict):
             _normalize_detection(data["detection"])
+        # 远程预警每次启动都默认不开启（enabled 强制置 False），
+        # 其余选项保留用户最后一次修改——避免用户忘记关闭导致意外联网推送。
+        if isinstance(data.get("remote_alert"), dict):
+            data["remote_alert"]["enabled"] = False
         return data
 
     def save(self) -> None:

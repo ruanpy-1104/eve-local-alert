@@ -51,3 +51,46 @@ class TestConfig:
             "orange",
             "gray_white",
         ]
+
+    def test_remote_alert_disabled_by_default(self, tmp_path):
+        # 远程预警默认关闭（保持「默认完全本地」），冷却默认 5 分钟可选开启；
+        # 旧 config.json 缺该节时深度合并补全
+        from core.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["remote_alert"] == {
+            "enabled": False,
+            "sendkey": "",
+            "cooldown_enabled": False,
+            "cooldown_minutes": 5,
+        }
+        path = tmp_path / "old.json"
+        path.write_text(json.dumps({"roi": {"x": 0.5}}), encoding="utf-8")
+        cfg = ConfigManager(path)
+        assert cfg.data["remote_alert"] == {
+            "enabled": False,
+            "sendkey": "",
+            "cooldown_enabled": False,
+            "cooldown_minutes": 5,
+        }
+
+    def test_remote_alert_enabled_resets_on_reload(self, tmp_path):
+        # 每次启动加载配置时 enabled 强制重置为关闭，其余选项保留最后一次修改
+        path = tmp_path / "config.json"
+        cfg = ConfigManager(path)
+        cfg.update(
+            "remote_alert",
+            {
+                "enabled": True,
+                "sendkey": "SCT_keep",
+                "cooldown_enabled": True,
+                "cooldown_minutes": 10,
+            },
+        )
+        # 当前运行实例内仍为开启状态（不打断本次会话）
+        assert cfg.data["remote_alert"]["enabled"] is True
+        reloaded = ConfigManager(path)  # 模拟下次启动
+        ra = reloaded.data["remote_alert"]
+        assert ra["enabled"] is False
+        assert ra["sendkey"] == "SCT_keep"
+        assert ra["cooldown_enabled"] is True
+        assert ra["cooldown_minutes"] == 10

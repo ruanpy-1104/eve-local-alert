@@ -54,6 +54,7 @@ def run_headless(config_path: Path) -> None:
     from core.capture import Capture, client_size
     from core.config import ConfigManager
     from core.detector import Detector
+    from core.notifier import mark_enemy_gone, send_alert_async
     from core.region_selector import ROI
     from core.window_locator import WindowLocator, is_minimized
 
@@ -99,9 +100,15 @@ def run_headless(config_path: Path) -> None:
                 if not alerting:
                     alerting = True
                     alerter.start()
-            elif alerting:
-                alerting = False
-                alerter.stop()
+                    # 远程预警（默认关闭）：仅在本轮警报开始时发一条微信提醒；
+                    # 发送需同时满足内置 5 秒冷却与「敌方已消失」
+                    send_alert_async(cfg.data.get("remote_alert") or {})
+            else:
+                # 敌方消失（本帧未命中）：上报给远程提醒模块，作为再次触发的前提条件
+                mark_enemy_gone()
+                if alerting:
+                    alerting = False
+                    alerter.stop()
             frame_count += 1
             if frame_count % 30 == 0:
                 try:

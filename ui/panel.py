@@ -18,10 +18,12 @@ import numpy as np
 from PySide6.QtCore import QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -36,6 +38,12 @@ from core.colors import COLOR_ORDER, DEFAULT_ALERT_COLORS, EVE_COLORS
 from core.config import ConfigManager
 from core.detector import Detector
 from core.logger import get_logger
+from core.notifier import (
+    SERVERCHAN_REGISTER_URL,
+    mark_enemy_gone,
+    send_alert_async,
+    send_serverchan,
+)
 from core.paths import assets_dir
 from core.region_selector import ROI
 from core.window_locator import WindowInfo, WindowLocator, is_minimized
@@ -237,13 +245,18 @@ class MonitorWorker(QThread):
                     if not self._alerting and not self._paused.is_set():
                         self._alerting = True
                         alerter.start()
-                        hit_count += 1
+                        hit_count += 1  # 仅作「敌袭」标记（状态栏显示，不计数）
                         self.detected.emit()
+                        # 远程预警（默认关闭）：仅在本轮警报开始时发一条微信提醒；
+                        # 发送需同时满足内置 5 秒冷却与「敌方已消失」，独立线程异步发送
+                        send_alert_async(cfg.get("remote_alert") or {})
                     elif self._alerting and self._paused.is_set():
                         # 用户暂停时警报仍在播放中 → 停止（当前周期自然放完）
                         self._alerting = False
                         alerter.stop()
-                elif self._alerting or self._paused.is_set():
+                else:
+                    # 敌方消失（本帧未命中）：上报给远程提醒模块，作为再次触发的前提条件
+                    mark_enemy_gone()
                     if self._alerting:
                         self._alerting = False
                         alerter.stop()
@@ -277,7 +290,11 @@ class MonitorWorker(QThread):
                     fps = status_frames / max(now - last_status, 1e-6)
                     status_frames = 0
                     last_status = now
-                    self.status.emit(f"监控中 | {fps:.1f} FPS | 命中 {hit_count} 次")
+                    # 状态栏：遇过敌袭则标记「敌袭」（不显示次数）
+                    status = f"监控中 | {fps:.1f} FPS"
+                    if hit_count > 0:
+                        status += " | 敌袭"
+                    self.status.emit(status)
                 time.sleep(max(0.0, interval - elapsed))
         finally:
             alerter.stop()  # 确保退出监控时停止警报
@@ -485,6 +502,197 @@ class PauseSettingsDialog(QDialog):
         self.close()
 
 
+class _SendTestWorker(QThread):
+    """异步发送 Server酱 测试通知，结果经信号回 UI 线程（不阻塞界面）。"""
+
+    done = Signal(bool, str)
+
+    def __init__(self, sendkey: str, parent=None):
+        super().__init__(parent)
+        self._sendkey = sendkey
+
+    def run(self) -> None:
+        ok, message = send_serverchan(
+            self._sendkey,
+            "EVE Local Alert 测试通知",
+            "收到此条消息说明远程预警通道配置正常。",
+        )
+        self.done.emit(ok, message)
+
+
+class RemoteAlertDialog(QDialog):
+    """远程预警设置：Server酱 微信推送。
+
+    默认关闭；开启后警报触发时向用户自己的微信推送一条提醒。
+    首次使用（开启时尚未填写 SendKey）显示引导步骤与 Server酱 注册入口。
+    """
+
+    def __init__(self, config: ConfigManager, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self._test_worker: _SendTestWorker | None = None
+
+        self.setWindowTitle("远程预警 · 微信推送（Server酱）")
+        self.setFixedWidth(500)
+        self._build_ui()
+        self._sync_from_config()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(14)
+
+        desc = QLabel(
+            "开启后，警报触发时通过 Server酱 向你的微信推送一条提醒（需联网；"
+            "发送失败只记日志，不影响本地警报音）"
+        )
+        desc.setObjectName("descriptionLabel")
+        desc.setWordWrap(True)
+        root.addWidget(desc)
+
+        self.enable_check = QCheckBox("启用远程预警")
+        self.enable_check.toggled.connect(self._update_state)
+        root.addWidget(self.enable_check)
+
+        # ---- 首次使用引导（开启且未填 SendKey 时显示） ----
+        self.guide_label = QLabel(
+            "首次使用：\n"
+            "1. 登录 Server酱（微信扫码即可）\n"
+            "2. 在「SendKey」页面复制你的 Key（SCT 开头）\n"
+            "3. 粘贴到下方输入框，微信将收到一条关注绑定消息"
+        )
+        self.guide_label.setObjectName("descriptionLabel")
+        self.guide_label.setWordWrap(True)
+        root.addWidget(self.guide_label)
+
+        register_row = QHBoxLayout()
+        self.register_btn = QPushButton("打开 Server酱 注册页面")
+        self.register_btn.setToolTip(SERVERCHAN_REGISTER_URL)
+        self.register_btn.setCursor(Qt.PointingHandCursor)
+        self.register_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(SERVERCHAN_REGISTER_URL))
+        )
+        register_row.addWidget(self.register_btn)
+        register_row.addStretch()
+        root.addLayout(register_row)
+
+        # ---- SendKey ----
+        key_row = QHBoxLayout()
+        key_row.setSpacing(10)
+        key_lbl = QLabel("SendKey")
+        key_lbl.setObjectName("subtitleLabel")
+        self.sendkey_edit = QLineEdit()
+        self.sendkey_edit.setPlaceholderText("粘贴 SCT 开头的 SendKey")
+        self.sendkey_edit.textChanged.connect(self._update_state)
+        key_row.addWidget(key_lbl)
+        key_row.addWidget(self.sendkey_edit, stretch=1)
+        root.addLayout(key_row)
+
+        # ---- 测试通知 ----
+        test_row = QHBoxLayout()
+        test_row.setSpacing(10)
+        self.test_btn = QPushButton("发送测试通知")
+        self.test_btn.setMinimumHeight(36)
+        self.test_btn.clicked.connect(self._send_test)
+        self.test_result = QLabel("")
+        test_row.addWidget(self.test_btn)
+        test_row.addWidget(self.test_result, stretch=1)
+        root.addLayout(test_row)
+
+        # ---- 冷却间隔（可选）：免费版每日 5 条额度，建议开启以免短时间重复推送 ----
+        self.cooldown_check = QCheckBox("启用冷却间隔（免费用户请勾选）")
+        self.cooldown_check.toggled.connect(self._update_state)
+        root.addWidget(self.cooldown_check)
+        cooldown_desc = QLabel(
+            "勾选后，两次远程提醒之间至少间隔设定时间：目标短暂消失又出现时不再重复推送，"
+            "把 Server酱 免费版每日 5 条的额度留给真正需要的警报"
+        )
+        cooldown_desc.setObjectName("descriptionLabel")
+        cooldown_desc.setWordWrap(True)
+        root.addWidget(cooldown_desc)
+        cooldown_row = QHBoxLayout()
+        cooldown_row.setSpacing(10)
+        cooldown_lbl = QLabel("冷却时间")
+        cooldown_lbl.setObjectName("subtitleLabel")
+        self.cooldown_spin = QSpinBox()
+        self.cooldown_spin.setRange(1, 120)
+        self.cooldown_spin.setSuffix(" 分钟")
+        cooldown_row.addWidget(cooldown_lbl)
+        cooldown_row.addWidget(self.cooldown_spin)
+        cooldown_row.addStretch()
+        root.addLayout(cooldown_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self.apply_btn = QPushButton("应用")
+        self.apply_btn.setProperty("role", theme.ROLE_PRIMARY)
+        self.close_btn = QPushButton("关闭")
+        for btn in (self.apply_btn, self.close_btn):
+            btn.setMinimumHeight(36)
+        self.apply_btn.clicked.connect(self._apply)
+        self.close_btn.clicked.connect(self.close)
+        btn_row.addStretch()
+        btn_row.addWidget(self.apply_btn)
+        btn_row.addWidget(self.close_btn)
+        root.addLayout(btn_row)
+
+    # ---- 状态 ----
+    def _sendkey(self) -> str:
+        return self.sendkey_edit.text().strip()
+
+    def _sync_from_config(self) -> None:
+        remote = self.config.data.get("remote_alert") or {}
+        self.enable_check.setChecked(bool(remote.get("enabled")))
+        self.sendkey_edit.setText(str(remote.get("sendkey") or ""))
+        self.cooldown_check.setChecked(bool(remote.get("cooldown_enabled")))
+        self.cooldown_spin.setValue(int(remote.get("cooldown_minutes", 5) or 5))
+        self._update_state()
+
+    def _update_state(self) -> None:
+        """开关 / SendKey / 冷却变化时刷新引导显隐、测试与应用按钮可用性。"""
+        enabled = self.enable_check.isChecked()
+        has_key = bool(self._sendkey())
+        # 首次使用引导：开启但还没填 SendKey
+        self.guide_label.setVisible(enabled and not has_key)
+        self.register_btn.setVisible(enabled and not has_key)
+        self.test_btn.setEnabled(has_key)
+        self.cooldown_spin.setEnabled(self.cooldown_check.isChecked())
+        if not has_key:
+            self.test_result.clear()
+        # 已开启但没填 SendKey 时不允许应用，避免保存无效配置
+        self.apply_btn.setEnabled(not enabled or has_key)
+
+    def _send_test(self) -> None:
+        sendkey = self._sendkey()
+        if not sendkey or (
+            self._test_worker is not None and self._test_worker.isRunning()
+        ):
+            return
+        self.test_btn.setEnabled(False)
+        self.test_result.setText("发送中...")
+        self._test_worker = _SendTestWorker(sendkey, self)
+        self._test_worker.done.connect(self._on_test_done)
+        self._test_worker.start()
+
+    def _on_test_done(self, ok: bool, message: str) -> None:
+        self.test_btn.setEnabled(True)
+        self.test_result.setText(
+            "已发送，请查看微信" if ok else f"发送失败：{message}"
+        )
+
+    def _apply(self) -> None:
+        self.config.update(
+            "remote_alert",
+            {
+                "enabled": self.enable_check.isChecked(),
+                "sendkey": self._sendkey(),
+                "cooldown_enabled": self.cooldown_check.isChecked(),
+                "cooldown_minutes": self.cooldown_spin.value(),
+            },
+        )
+        self.close()
+
+
 class PreviewDialog(QDialog):
     """独立预警预览窗口：显示框选监控区域画面与识别信息。
 
@@ -658,8 +866,9 @@ class ControlPanel(QWidget):
         self.setWindowTitle("EVE Local Alert")
         self.setWindowIcon(self._app_icon())
         # 注意：面板不做置顶，不改变其他窗口的 Z 序或前台状态，避免影响其他应用操作。
-        self.setMinimumSize(520, 460)
-        self.resize(520, 520)
+        # 最小宽度须容纳次要功能行（5 个 96px 按钮 + GitHub 图标 + 间距），否则布局挤压重叠
+        self.setMinimumSize(600, 460)
+        self.resize(600, 520)
         self._build_ui()
         self._update_preview_button()
 
@@ -713,10 +922,14 @@ class ControlPanel(QWidget):
         tool_row.setSpacing(8)
         self.color_btn = QPushButton("颜色选择")
         self.preview_btn = QPushButton("预览")
-        self.test_btn = QPushButton("测试警报音")
+        self.test_btn = QPushButton("测试声音")
         self.pause_settings_btn = QPushButton("暂停设置")
         self.pause_settings_btn.setToolTip(
             "设置暂停预警后自动恢复的延时（目标连续未出现多少秒后自动解除暂停）"
+        )
+        self.remote_btn = QPushButton("远程预警")
+        self.remote_btn.setToolTip(
+            "开启后，警报触发时通过 Server酱 向你的微信推送提醒（默认关闭）"
         )
         # 次要功能统一固定宽度，左侧紧凑排布，避免按钮撑满整行
         for btn in (
@@ -724,9 +937,10 @@ class ControlPanel(QWidget):
             self.preview_btn,
             self.test_btn,
             self.pause_settings_btn,
+            self.remote_btn,
         ):
             btn.setMinimumHeight(38)
-            btn.setFixedWidth(104)
+            btn.setFixedWidth(96)
             tool_row.addWidget(btn)
         # 与 GitHub 图标之间留出弹性空白（≥ 一个按钮宽度），方便后续追加新功能按钮
         tool_row.addStretch(1)
@@ -748,6 +962,7 @@ class ControlPanel(QWidget):
         self.preview_btn.clicked.connect(self._open_preview)
         self.test_btn.clicked.connect(self._test_alert)
         self.pause_settings_btn.clicked.connect(self._open_pause_settings)
+        self.remote_btn.clicked.connect(self._open_remote_alert)
 
     def _proportional_height(self) -> int:
         """按监控程序宽高比计算目标高度：控件高 + 预览(窗口宽 - 边距)/程序比例。"""
@@ -1057,6 +1272,11 @@ class ControlPanel(QWidget):
         dialog = PauseSettingsDialog(self.config, self)
         dialog.exec()
 
+    def _open_remote_alert(self) -> None:
+        """打开远程预警设置：Server酱 微信推送（默认关闭，首次使用有引导）。"""
+        dialog = RemoteAlertDialog(self.config, self)
+        dialog.exec()
+
     def _update_preview_button(self) -> None:
         """「预览」仅在已选择目标时可点击。"""
         self.preview_btn.setEnabled(self._has_target)
@@ -1074,7 +1294,7 @@ class ControlPanel(QWidget):
         QDesktopServices.openUrl(QUrl("https://github.com/ruanpy-1104/eve-local-alert"))
 
     def _test_alert(self) -> None:
-        """测试警报音：播放一个完整周期后停止。"""
+        """测试声音：播放一个完整周期后停止。"""
         if (
             self._worker is not None
             and self._worker.isRunning()

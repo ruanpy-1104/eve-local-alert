@@ -35,7 +35,7 @@ pip install -r requirements.txt
 
 ## 2. 配置说明（config.json）
 
-配置为单一 JSON 文件：开发期位于项目根目录；打包后位于系统用户数据目录 `%APPDATA%\eve-alert\config.json`（见 `core/paths.py` 的 `app_dir()`）。程序启动时读取，字段全部本地化，无任何网络项。配置缺失时程序自动使用默认值（`core/config.py` 的 `DEFAULT_CONFIG` 深度合并），模板见 `config.example.json`。
+配置为单一 JSON 文件：开发期位于项目根目录；打包后位于系统用户数据目录 `%APPDATA%\eve-alert\config.json`（见 `core/paths.py` 的 `app_dir()`）。程序启动时读取，字段全部本地化；唯一的网络项是远程预警的 Server酱 SendKey（`remote_alert.sendkey`，仅在用户显式开启远程预警后使用）。配置缺失时程序自动使用默认值（`core/config.py` 的 `DEFAULT_CONFIG` 深度合并），模板见 `config.example.json`。
 
 ```json
 {
@@ -57,6 +57,12 @@ pip install -r requirements.txt
   },
   "alert": {
     "sound_file": "assets/alert.wav"
+  },
+  "remote_alert": {
+    "enabled": false,
+    "sendkey": "",
+    "cooldown_enabled": false,
+    "cooldown_minutes": 5
   },
   "loop": {
     "fps": 6
@@ -81,6 +87,10 @@ pip install -r requirements.txt
 | `detection.colors` | string[] | 4 色 | 启用的警报颜色键（见 `core/colors.py` 的 `EVE_COLORS`）。 |
 | `detection.strictness` | int | 50 | 识别程度 0（宽松）~ 100（严格）。 |
 | `alert.sound_file` | string | `"assets/alert.wav"` | 警报音相对项目根路径；缺失时回退系统蜂鸣。 |
+| `remote_alert.enabled` | bool | `false` | 远程预警开关（Server酱 微信推送）。**每次启动强制重置为 `false`**（见 `core/config.py` 的 `_load`），其余选项保留用户最后一次修改；关闭时不产生任何网络请求。 |
+| `remote_alert.sendkey` | string | `""` | Server酱 SendKey，经面板「远程预警」对话框引导获取；保存为明文本地配置。 |
+| `remote_alert.cooldown_enabled` | bool | `false` | 是否启用更长的冷却间隔（免费版每日 5 条额度，建议开启）。 |
+| `remote_alert.cooldown_minutes` | int | `5` | 用户冷却间隔（分钟），仅 `cooldown_enabled` 时生效；与内置 30 秒防抖取较大值。 |
 | `loop.fps` | int | 6 | 检测循环帧率（越低 CPU 占用越低）。 |
 | `logging.level` | string | `"error"` | 日志级别：debug / info / warning / error / critical。 |
 | `logging.file` | string | `"logs/eve-alert.log"` | 日志文件相对路径（相对数据目录 `app_dir()`；开发期为项目根，打包后为 `%APPDATA%\eve-alert`）。 |
@@ -204,7 +214,29 @@ class Alerter:
 
 - 识别到目标即 `start`，目标消失即 `stop`（无冷却）；播放失败保持尽力而为，不中断监控。周期时长经 `wave` 模块读取 wav 头得出，解析失败时回退 1.0s。
 
-### 3.8 logger（日志）
+### 3.8 notifier（远程预警通知）
+
+```python
+SERVERCHAN_API_URL: str       # "https://sctapi.ftqq.com/{key}.send"
+SERVERCHAN_REGISTER_URL: str  # Server酱 注册页（UI 引导入口，含推广计划链接）
+
+def send_serverchan(sendkey: str, title: str, desp: str = "") -> tuple[bool, str]: ...
+                              # 同步发送一条 Server酱 消息（urllib POST，5s 超时），返回 (成功, 描述)
+def mark_enemy_gone() -> None: ...
+                              # 上报敌方已消失（本帧未命中）；内置冷却条件之二，幂等
+def send_alert_async(remote_cfg: dict) -> None: ...
+                              # 警报触发时发送远程提醒：enabled 关闭 / sendkey 为空直接返回；
+                              # 判定顺序为用户冷却 → 内置双条件（5 秒冷却 + 敌方已消失）；
+                              # 通过则 daemon 线程异步发送，失败仅记日志
+```
+
+- **默认关闭**：`remote_alert.enabled` 为 false 时不产生任何网络请求，保持「默认完全本地」。
+- **状态变化才发送**：调用方（`MonitorWorker` / CLI 闭环）仅在本轮警报开始的 False -> True 状态转换处调用一次，持续命中不重复发送。
+- **内置双条件冷却**：再次发送必须**同时满足**——① 距上次**推送消息** ≥ 5 秒（从发起推送时刻起算，非敌方消失时刻；模块级状态，仅程序运行期间有效，发送失败同样计入，避免失败重试轰炸）；② 敌方已消失（调用方在每个未命中帧调用 `mark_enemy_gone()` 上报，幂等）。
+- **用户冷却独立优先**：`cooldown_enabled` 开启时**先判定**用户配置的 `cooldown_minutes`（默认 5 分钟），其次才判定内置双条件；两者互不影响，用户等待时间不会被内置 5 秒缩短或延长。
+- **尽力而为**：短超时 + daemon 线程，发送失败不影响本地警报音，也不阻塞监控循环。
+
+### 3.9 logger（日志）
 
 ```python
 DEFAULT_LOG_FILENAME: str                    # 默认日志文件 "logs/eve-alert.log"
@@ -359,6 +391,7 @@ function detect(frame_bgr):
 | `test_region_selector.py` | `from_pixels` / `to_pixels` 往返一致、越界 |
 | `test_window_locator.py` | 窗口枚举 / 匹配优先级 / 最小化检测 |
 | `test_alerter.py` | start / stop / is_active 状态机 |
+| `test_notifier.py` | Server酱 请求构造 / 结果解析 / 失败与空 SendKey 短路 / 异步触发条件 |
 
 运行：`python -m pytest`（配置见 `pytest.ini`）。
 

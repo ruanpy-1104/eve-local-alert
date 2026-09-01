@@ -24,6 +24,12 @@
     "sound_file": "assets/alert.wav",
     "resume_delay": 10
   },
+  "remote_alert": {
+    "enabled": false,
+    "sendkey": "",
+    "cooldown_enabled": false,
+    "cooldown_minutes": 5
+  },
   "loop": {
     "fps": 6
   },

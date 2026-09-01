@@ -320,9 +320,9 @@ class MonitorWorker(QThread):
 class ColorPickerDialog(QDialog):
     """颜色选择：色块勾选警报颜色 + 识别程度（三档滑块）。
 
-    布局采用主题统一的卡片（QFrame + 内容内标题）：上「警报颜色」、下「识别程度」，
-    底部为操作按钮行，左侧动态显示已选色数与应用反馈。标题为普通 QLabel，
-    避免 QGroupBox 标题「骑」在边框上导致与内容重叠。
+    布局：标题作为内容区块的纯文字标题（无边框、位于区块外侧上方）；
+    色块放在浅色卡片容器内（卡片本身含边框）；识别程度为一行滑块（无卡片框，
+    仅轨道有颜色，其余与背景一致）。
     """
 
     _CARD_QSS = (
@@ -339,31 +339,28 @@ class ColorPickerDialog(QDialog):
         self._build_ui()
 
     # ---- UI ----
-    @staticmethod
-    def _make_card(title: str) -> tuple[QFrame, QVBoxLayout]:
-        """构建一张主题卡片：QFrame 边框容器 + 内容顶部标题 QLabel，返回 (卡片, 内容布局)。"""
-        card = QFrame()
-        card.setStyleSheet(ColorPickerDialog._CARD_QSS)
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(16, 12, 16, 14)
-        lay.setSpacing(10)
-        head = QLabel(title)
-        head.setObjectName("sectionLabel")
-        lay.addWidget(head)
-        return card, lay
+    def _make_section_title(self, text: str) -> QLabel:
+        """内容区块上方的纯文字标题（无边框）。"""
+        label = QLabel(text)
+        label.setObjectName("sectionLabel")
+        return label
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(16)
+        root.setSpacing(14)
 
         desc = QLabel("勾选需要警报的颜色，误报时往严格调，漏报时往宽松调")
         desc.setObjectName("descriptionLabel")
         desc.setWordWrap(True)
         root.addWidget(desc)
 
-        # ---- 警报颜色（卡片：色块勾选 + 动态计数） ----
-        color_group, color_box = self._make_card("警报颜色")
+        # ---- 警报颜色：标题在卡片外，卡片内仅色块 ----
+        root.addWidget(self._make_section_title("警报颜色"))
+        color_group = QFrame()
+        color_group.setStyleSheet(self._CARD_QSS)
+        color_box = QVBoxLayout(color_group)
+        color_box.setContentsMargins(14, 12, 14, 12)
         color_box.setSpacing(10)
 
         palette_grid = QGridLayout()
@@ -377,7 +374,9 @@ class ColorPickerDialog(QDialog):
             text_color = "black" if luminance > 150 else "white"
             btn = QPushButton("")
             btn.setCheckable(True)
-            btn.setFixedSize(64, 44)
+            # 用 Expanding + minimumSize 让色块随列宽均匀铺开，避免固定宽挤压重叠
+            btn.setMinimumSize(48, 44)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setToolTip(f"{info['label']}（{name}）")
             btn.setStyleSheet(
@@ -388,23 +387,15 @@ class ColorPickerDialog(QDialog):
             btn.clicked.connect(lambda _checked, n=name: self._on_color_toggled(n))
             palette_grid.addWidget(btn, i // 6, i % 6)
             self._color_buttons[name] = btn
-        palette_row = QHBoxLayout()
-        palette_row.addStretch()
-        palette_row.addLayout(palette_grid)
-        palette_row.addStretch()
-        color_box.addLayout(palette_row)
-
-        self.color_hint = QLabel()
-        self.color_hint.setObjectName("statusLabel")
-        self.color_hint.setAlignment(Qt.AlignCenter)
-        color_box.addWidget(self.color_hint)
+        for col in range(len(COLOR_ORDER) // 2):  # 每行 6 列均分宽度
+            palette_grid.setColumnStretch(col, 1)
+        color_box.addLayout(palette_grid)
         root.addWidget(color_group)
         self._sync_colors_from_config()
         self._refresh_swatch_marks()
-        self._update_color_hint()
 
-        # ---- 识别程度（卡片：滑块 + 刻度，左右标签紧贴滑块两端） ----
-        strict_group, strict_box = self._make_card("识别程度")
+        # ---- 识别程度：标题为纯文字（无卡片），滑块行无边框、仅轨道有颜色 ----
+        root.addWidget(self._make_section_title("识别程度"))
 
         loose_lbl = QLabel("宽松")
         strict_lbl = QLabel("严格")
@@ -414,7 +405,7 @@ class ColorPickerDialog(QDialog):
         self.strictness_slider.setRange(0, 100)
         self.strictness_slider.setSingleStep(50)
         self.strictness_slider.setPageStep(50)
-        self.strictness_slider.setMinimumHeight(24)  # 保证 16px 圆形手柄完整显示（含上下边距）
+        self.strictness_slider.setMinimumHeight(24)
         self.strictness_slider.setValue(
             int(self.config.data["detection"].get("strictness", 0))
         )
@@ -422,20 +413,19 @@ class ColorPickerDialog(QDialog):
         self.strictness_value = QLabel()
         self.strictness_value.setMinimumWidth(76)
         self.strictness_value.setAlignment(Qt.AlignCenter)
-        # 滑块（含下方刻度）撑满分组剩余宽度：两端「宽松 / 严格」标签紧贴滑块，
-        # 数值标签紧随其后；左中右无多余拉伸，滑块区间居中、左右天然对称。
+        # 滑块（含下方刻度）撑满剩余宽度：两端「宽松 / 严格」标签紧贴滑块，
+        # 数值标签紧随其后；整行无卡片框，背景与对话框一致、仅轨道有颜色。
         slider_block = QVBoxLayout()
-        slider_block.setSpacing(3)
+        slider_block.setSpacing(4)
         slider_block.addWidget(self.strictness_slider)
         slider_block.addWidget(_StrictScale())
         slider_row = QHBoxLayout()
         slider_row.setSpacing(10)
         slider_row.addWidget(loose_lbl)
-        slider_row.addLayout(slider_block, 1)  # 滑块占满剩余，撑开至卡片宽
+        slider_row.addLayout(slider_block, 1)
         slider_row.addWidget(strict_lbl)
         slider_row.addWidget(self.strictness_value)
-        strict_box.addLayout(slider_row)
-        root.addWidget(strict_group)
+        root.addLayout(slider_row)
         self._update_strictness_label()
 
         # 底部少量弹性空白：内容紧凑，按钮行沉底，与识别程度卡片间隔留白自然
@@ -493,14 +483,8 @@ class ColorPickerDialog(QDialog):
         self._update_strictness_label()
 
     def _on_color_toggled(self, _name: str) -> None:
-        """勾选颜色变化：刷新对勾标记与已选计数。"""
+        """勾选颜色变化：刷新对勾标记。"""
         self._refresh_swatch_marks()
-        self._update_color_hint()
-
-    def _update_color_hint(self) -> None:
-        """色块下方动态提示：已选颜色数 / 总数。"""
-        count = len(self._active_colors())
-        self.color_hint.setText(f"已选 {count} / {len(self._color_buttons)} 色，命中即警报")
 
     def _apply(self) -> None:
         det = dict(self.config.data["detection"])

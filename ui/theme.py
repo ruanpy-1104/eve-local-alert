@@ -180,10 +180,12 @@ QListWidget::item:selected {{
 QListWidget::item:selected:hover {{ background-color: {PRIMARY_HOVER}; }}
 QListWidget::item:hover {{ background-color: {SURFACE_HOVER}; }}
 
-/* ---- 滑块：轨道用比卡片表面更深的轮廓色，保证在深色卡片上清晰可见 ---- */
+/* ---- 滑块：仅轨道填充有颜色，未填充与手柄融入背景，视觉只剩蓝色进度 ----
+   groove 用与对话框背景相同颜色（BG 深空色），sub-page 用主题蓝填充，
+   handle 用填充同色并略小，使其与轨道融为一体、不突兀。 */
 QSlider::groove:horizontal {{
     height: 6px;
-    background-color: {BORDER};
+    background-color: {BG};
     border-radius: 3px;
 }}
 QSlider::sub-page:horizontal {{
@@ -191,11 +193,11 @@ QSlider::sub-page:horizontal {{
     border-radius: 3px;
 }}
 QSlider::handle:horizontal {{
-    background-color: #ffffff;
-    width: 16px;
-    height: 16px;
-    margin: -5px 0;
-    border-radius: 8px;
+    background-color: {PRIMARY};
+    width: 14px;
+    height: 14px;
+    margin: -4px 0;
+    border-radius: 7px;
 }}
 QSlider::handle:horizontal:hover {{ background-color: {PRIMARY_HOVER}; }}
 QSlider::handle:horizontal:pressed {{ background-color: {PRIMARY_PRESSED}; }}

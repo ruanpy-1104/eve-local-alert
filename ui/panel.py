@@ -66,6 +66,7 @@ class _StrictScale(QWidget):
 
     直接按滑轨分数位置绘制，避免布局错位：左右各留出手柄半宽内边距，
     使两端刻度与滑轨端点、中间刻度与滑轨 50% 分位精确对齐。
+    水平撑满所在空间（与滑块同宽），保证刻度与滑轨对齐。
     """
 
     _VALUES = (0, 50, 100)
@@ -74,8 +75,7 @@ class _StrictScale(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(20)
-        self.setMinimumWidth(220)
-        # 水平撑满所在列（与滑块同宽），垂直固定
+        # 水平撑满（与滑块同宽），垂直固定；不设最小宽，避免限制滑块扩展
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def paintEvent(self, _event) -> None:
@@ -329,14 +329,14 @@ class ColorPickerDialog(QDialog):
         self.config = config
 
         self.setWindowTitle("颜色选择 · 警报颜色")
-        self.setFixedSize(520, 450)
+        self.setFixedSize(520, 392)
         self._build_ui()
 
     # ---- UI ----
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
-        root.setSpacing(12)
+        root.setSpacing(16)
 
         desc = QLabel("勾选需要警报的颜色，误报时往严格调，漏报时往宽松调")
         desc.setObjectName("descriptionLabel")
@@ -405,25 +405,25 @@ class ColorPickerDialog(QDialog):
         )
         self.strictness_slider.valueChanged.connect(self._on_strictness_changed)
         self.strictness_value = QLabel()
-        self.strictness_value.setMinimumWidth(72)
+        self.strictness_value.setMinimumWidth(76)
         self.strictness_value.setAlignment(Qt.AlignCenter)
-        # 滑块（含下方刻度）作为整体居中：两侧对称留白，滑块约占分组内宽 3/4
+        # 滑块（含下方刻度）撑满分组剩余宽度：两端「宽松 / 严格」标签紧贴滑块，
+        # 数值标签紧随其后；左中右无多余拉伸，滑块区间居中、左右天然对称。
         slider_block = QVBoxLayout()
         slider_block.setSpacing(3)
         slider_block.addWidget(self.strictness_slider)
         slider_block.addWidget(_StrictScale())
         slider_row = QHBoxLayout()
         slider_row.setSpacing(10)
-        slider_row.addStretch(1)
         slider_row.addWidget(loose_lbl)
-        slider_row.addLayout(slider_block, 6)
+        slider_row.addLayout(slider_block, 1)  # 滑块占满剩余，撑开至卡片宽
         slider_row.addWidget(strict_lbl)
         slider_row.addWidget(self.strictness_value)
-        slider_row.addStretch(1)
         strict_box.addLayout(slider_row)
         root.addWidget(strict_group)
         self._update_strictness_label()
 
+        # 底部少量弹性空白：内容紧凑，按钮行沉底，与识别程度卡片间隔留白自然
         root.addStretch(1)
 
         # ---- 底部：应用反馈（左） + 操作按钮（右） ----

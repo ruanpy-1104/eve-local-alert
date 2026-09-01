@@ -29,7 +29,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "alert": {
         "sound_file": "assets/alert.wav",
-        # 暂停预警后目标「连续未出现」多少秒才自动恢复（0 表示黑屏即恢复）
+        # 暂停预警至少持续多少秒，且目标不在视野时才自动恢复（0 表示黑屏即恢复）
         "resume_delay": 10,
     },
     # 远程预警（Server酱 微信推送）：每次启动都重置为关闭（见 _load），

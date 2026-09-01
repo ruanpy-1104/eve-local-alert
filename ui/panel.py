@@ -113,7 +113,7 @@ class MonitorWorker(QThread):
     preview = Signal(object)  # BGR 预览帧（numpy ndarray）
     status = Signal(str)      # 状态文本（富文本：敌袭/安全带颜色）
     error = Signal(str)       # 致命错误
-    alert_paused = Signal(bool)  # 播报暂停状态：True=已暂停，False=红名离开自动恢复
+    alert_paused = Signal(bool)  # 播报暂停状态：True=已暂停，False=达最短时长且目标不在视野后自动恢复
     window_lost = Signal(str)    # 目标窗口已关闭：监控结束，面板退回未选择状态
     window_minimized = Signal()  # 目标窗口已最小化：提醒玩家恢复窗口
 
@@ -122,10 +122,10 @@ class MonitorWorker(QThread):
         self._config = config
         self._root = root_dir
         self._stop = threading.Event()
-        self._paused = threading.Event()  # 播报暂停：命中不报警，红名离开自动恢复
+        self._paused = threading.Event()  # 播报暂停：命中不报警，达最短时长且目标不在视野后自动恢复
         self._alerting = False  # 当前是否正在播放警报（供 UI 线程只读查询）
         self._window_lost = False  # 目标窗口已关闭（抑制 run() 的"已停止"状态覆盖）
-        self._paused_miss_start: float | None = None  # 暂停态下连续未命中起始时刻（自动恢复防抖）
+        self._paused_since: float | None = None  # 暂停开始时刻（最短持续时长计时起点）
 
     def _status_text(self, fps: float, hit: bool) -> str:
         """监控状态栏富文本：命中「敌袭」红色加粗增大，未命中「安全」绿色正常大小。
@@ -149,10 +149,11 @@ class MonitorWorker(QThread):
     def set_paused(self, paused: bool) -> None:
         """设置播报暂停状态（UI 线程调用，工作线程下一帧生效）。"""
         if paused:
+            self._paused_since = time.perf_counter()  # 最短持续时长计时起点
             self._paused.set()
         else:
             self._paused.clear()
-        self._paused_miss_start = None  # 暂停状态切换时重置自动恢复计时
+            self._paused_since = None
 
     def is_paused(self) -> bool:
         return self._paused.is_set()
@@ -253,12 +254,11 @@ class MonitorWorker(QThread):
                     continue
 
                 # 连续警报：识别到即持续播放，未识别立即停止（无冷却）。
-                # 播报暂停时：即使命中也不报警；目标持续未出现达到设置延时后才自动恢复
-                # （进出站黑屏等短暂无检测不会误解除暂停）。
+                # 播报暂停时：即使命中也不报警；暂停至少持续设定时长（resume_delay），
+                # 时长满后目标不在视野才自动恢复——进出空间站等短暂无检测不会提前解除。
                 hit = detector.detect(frame)
                 last_hit = hit  # 供状态栏「敌袭/安全」实时指示
                 if hit:
-                    self._paused_miss_start = None  # 目标仍在视野：重置无目标计时
                     if not self._alerting and not self._paused.is_set():
                         self._alerting = True
                         alerter.start()
@@ -281,17 +281,15 @@ class MonitorWorker(QThread):
                         self.status.emit(self._status_text(self._approx_fps(status_frames, last_status), False))
                     if self._paused.is_set():
                         resume_delay = float(cfg["alert"].get("resume_delay", 10) or 0)
+                        # 暂停至少持续设定时长，且当前无目标时才自动恢复（目标在视野时永不恢复）
                         now = time.perf_counter()
                         if resume_delay <= 0 or (
-                            self._paused_miss_start is not None
-                            and now - self._paused_miss_start >= resume_delay
+                            self._paused_since is not None
+                            and now - self._paused_since >= resume_delay
                         ):
-                            # 目标已持续离开：自动恢复预警，下次命中重新报警
-                            self._paused_miss_start = None
+                            self._paused_since = None
                             self._paused.clear()
                             self.alert_paused.emit(False)
-                        elif self._paused_miss_start is None:
-                            self._paused_miss_start = now
 
                 # 预览叠加检测框，实时反馈识别结果（绿框 = 检测到目标颜色）
                 vis = frame
@@ -509,17 +507,17 @@ class ColorPickerDialog(QDialog):
 
 
 class PauseSettingsDialog(QDialog):
-    """暂停设置：自动恢复延时（暂停后目标连续未出现多少秒才自动解除暂停）。
+    """暂停设置：暂停最短持续时长（暂停后至少持续多少秒，且目标不在视野时才自动解除暂停）。
 
-    进出空间站等操作会造成数秒黑屏（检测不到目标），若恢复无延时会在黑屏瞬间
-    误解除暂停并再次报警；调大延时可避免。设为 0 秒表示不延时（黑屏即恢复）。
+    进出空间站等操作会造成数秒黑屏（检测不到目标），若时长为 0 会在黑屏瞬间误解除
+    暂停并再次报警；调大时长可避免。设为 0 秒表示不延时（黑屏即恢复）。
     """
 
     def __init__(self, config: ConfigManager, parent=None):
         super().__init__(parent)
         self.config = config
 
-        self.setWindowTitle("暂停设置 · 自动恢复延时")
+        self.setWindowTitle("暂停设置 · 最短持续时长")
         self.setFixedSize(440, 220)
         self._build_ui()
 
@@ -528,14 +526,14 @@ class PauseSettingsDialog(QDialog):
         root.setContentsMargins(22, 18, 22, 18)
         root.setSpacing(14)
 
-        desc = QLabel("暂停后目标连续未出现多少秒才自动恢复预警")
+        desc = QLabel("暂停后至少持续多少秒，且目标不在视野时才自动恢复预警")
         desc.setObjectName("descriptionLabel")
         desc.setWordWrap(True)
         root.addWidget(desc)
 
         row = QHBoxLayout()
         row.setSpacing(10)
-        lbl = QLabel("自动恢复延时")
+        lbl = QLabel("最短持续时长")
         lbl.setObjectName("subtitleLabel")
         self.delay_spin = QSpinBox()
         self.delay_spin.setRange(0, 120)
@@ -968,7 +966,7 @@ class ControlPanel(QWidget):
         self.pause_btn.setCheckable(True)
         self.pause_btn.setEnabled(False)
         self.pause_btn.setToolTip(
-            "点击后即使命中也不报警；目标持续未出现达设定延时后自动恢复（延时可在「暂停设置」调整）"
+            "点击后即使命中也不报警；暂停至少持续设定时长，且目标不在视野时才自动恢复（时长可在「暂停设置」调整）"
         )
         self.target_btn = QPushButton("选择程序")
         # 主功能：更大字号 + 更高按钮，与次要功能拉开明显层次
@@ -988,7 +986,7 @@ class ControlPanel(QWidget):
         self.test_btn = QPushButton("测试声音")
         self.pause_settings_btn = QPushButton("暂停设置")
         self.pause_settings_btn.setToolTip(
-            "设置暂停预警后自动恢复的延时（目标连续未出现多少秒后自动解除暂停）"
+            "设置暂停预警的最短持续时长（时长满后目标不在视野即自动解除暂停）"
         )
         self.remote_btn = QPushButton("远程预警")
         self.remote_btn.setToolTip(
@@ -1290,7 +1288,7 @@ class ControlPanel(QWidget):
 
     # ---- 播报暂停 ----
     def _on_pause_toggled(self, checked: bool) -> None:
-        """用户点击「暂停预警」：即使命中也不报警，红名离开后自动恢复。"""
+        """用户点击「暂停预警」：即使命中也不报警，达最短时长且目标不在视野后自动恢复。"""
         if self._worker is None or not self._worker.isRunning():
             # 未监控时忽略（按钮已禁用，双保险）
             self.pause_btn.blockSignals(True)
@@ -1301,10 +1299,10 @@ class ControlPanel(QWidget):
         self._worker.set_paused(checked)
         self.pause_btn.setText("预警已暂停" if checked else "暂停预警")
         if checked:
-            self.status_label.setText("预警已暂停：命中不再报警，目标持续未出现达设定延时后自动恢复")
+            self.status_label.setText("预警已暂停：命中不再报警，达最短时长后目标不在视野即自动恢复")
 
     def _on_alert_paused(self, paused: bool) -> None:
-        """工作线程同步暂停状态（红名离开自动恢复时取消按钮勾选）。"""
+        """工作线程同步暂停状态（自动恢复播报时取消按钮勾选）。"""
         if self._worker is None or not self._worker.isRunning():
             return
         self.pause_btn.blockSignals(True)
@@ -1312,7 +1310,7 @@ class ControlPanel(QWidget):
         self.pause_btn.setText("预警已暂停" if paused else "暂停预警")
         self.pause_btn.blockSignals(False)
         if not paused:
-            self.status_label.setText("红名已离开，预警已自动恢复")
+            self.status_label.setText("目标不在视野，预警已自动恢复")
 
     # ---- 颜色选择 / 预览 ----
     def _open_color_picker(self) -> None:
@@ -1320,7 +1318,7 @@ class ControlPanel(QWidget):
         dialog.exec()
 
     def _open_pause_settings(self) -> None:
-        """打开暂停设置：自动恢复延时（秒）。"""
+        """打开暂停设置：暂停最短持续时长（秒）。"""
         dialog = PauseSettingsDialog(self.config, self)
         dialog.exec()
 

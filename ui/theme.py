@@ -180,10 +180,10 @@ QListWidget::item:selected {{
 QListWidget::item:selected:hover {{ background-color: {PRIMARY_HOVER}; }}
 QListWidget::item:hover {{ background-color: {SURFACE_HOVER}; }}
 
-/* ---- 滑块 ---- */
+/* ---- 滑块：轨道用比卡片表面更深的轮廓色，保证在深色卡片上清晰可见 ---- */
 QSlider::groove:horizontal {{
     height: 6px;
-    background-color: {SURFACE};
+    background-color: {BORDER};
     border-radius: 3px;
 }}
 QSlider::sub-page:horizontal {{

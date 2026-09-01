@@ -20,8 +20,8 @@ from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
+    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -320,19 +320,38 @@ class MonitorWorker(QThread):
 class ColorPickerDialog(QDialog):
     """颜色选择：色块勾选警报颜色 + 识别程度（三档滑块）。
 
-    布局采用主题统一的卡片分组（QGroupBox）：上「警报颜色」、下「识别程度」，
-    底部为操作按钮行，左侧动态显示已选色数与应用反馈。
+    布局采用主题统一的卡片（QFrame + 内容内标题）：上「警报颜色」、下「识别程度」，
+    底部为操作按钮行，左侧动态显示已选色数与应用反馈。标题为普通 QLabel，
+    避免 QGroupBox 标题「骑」在边框上导致与内容重叠。
     """
+
+    _CARD_QSS = (
+        f"QFrame {{ background-color: {theme.SURFACE};"
+        f" border: 1px solid {theme.BORDER}; border-radius: 10px; }}"
+    )
 
     def __init__(self, config: ConfigManager, parent=None):
         super().__init__(parent)
         self.config = config
 
         self.setWindowTitle("颜色选择 · 警报颜色")
-        self.setFixedSize(520, 392)
+        self.setFixedSize(520, 400)
         self._build_ui()
 
     # ---- UI ----
+    @staticmethod
+    def _make_card(title: str) -> tuple[QFrame, QVBoxLayout]:
+        """构建一张主题卡片：QFrame 边框容器 + 内容顶部标题 QLabel，返回 (卡片, 内容布局)。"""
+        card = QFrame()
+        card.setStyleSheet(ColorPickerDialog._CARD_QSS)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(10)
+        head = QLabel(title)
+        head.setObjectName("sectionLabel")
+        lay.addWidget(head)
+        return card, lay
+
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
@@ -343,10 +362,8 @@ class ColorPickerDialog(QDialog):
         desc.setWordWrap(True)
         root.addWidget(desc)
 
-        # ---- 警报颜色（卡片分组：色块勾选 + 动态计数） ----
-        color_group = QGroupBox("警报颜色")
-        color_box = QVBoxLayout(color_group)
-        color_box.setContentsMargins(14, 8, 14, 12)
+        # ---- 警报颜色（卡片：色块勾选 + 动态计数） ----
+        color_group, color_box = self._make_card("警报颜色")
         color_box.setSpacing(10)
 
         palette_grid = QGridLayout()
@@ -386,11 +403,8 @@ class ColorPickerDialog(QDialog):
         self._refresh_swatch_marks()
         self._update_color_hint()
 
-        # ---- 识别程度（卡片分组：滑块 + 刻度，左右对称留白） ----
-        strict_group = QGroupBox("识别程度")
-        strict_box = QVBoxLayout(strict_group)
-        strict_box.setContentsMargins(14, 8, 14, 10)
-        strict_box.setSpacing(3)
+        # ---- 识别程度（卡片：滑块 + 刻度，左右标签紧贴滑块两端） ----
+        strict_group, strict_box = self._make_card("识别程度")
 
         loose_lbl = QLabel("宽松")
         strict_lbl = QLabel("严格")
@@ -400,6 +414,7 @@ class ColorPickerDialog(QDialog):
         self.strictness_slider.setRange(0, 100)
         self.strictness_slider.setSingleStep(50)
         self.strictness_slider.setPageStep(50)
+        self.strictness_slider.setMinimumHeight(24)  # 保证 16px 圆形手柄完整显示（含上下边距）
         self.strictness_slider.setValue(
             int(self.config.data["detection"].get("strictness", 0))
         )

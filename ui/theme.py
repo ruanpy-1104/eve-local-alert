@@ -180,12 +180,12 @@ QListWidget::item:selected {{
 QListWidget::item:selected:hover {{ background-color: {PRIMARY_HOVER}; }}
 QListWidget::item:hover {{ background-color: {SURFACE_HOVER}; }}
 
-/* ---- 滑块：轨道用比背景深的轮廓色(清晰区分)，填充主题蓝，手柄融入填充 ----
-   groove 用 BORDER 轮廓色(深背景上可见的轨道凹槽)，sub-page 用主题蓝填充，
-   handle 用填充同色并略小，使其与轨道融为一体、不突兀。 */
+/* ---- 滑块：轨道用强调轮廓色(在卡片表面清晰区分)，填充主题蓝，手柄融入填充 ----
+   groove 用 BORDER_STRONG 强调色(卡片深底上清晰可见的轨道凹槽)，
+   sub-page 用主题蓝填充，handle 用填充同色并略小，使其与轨道融为一体、不突兀。 */
 QSlider::groove:horizontal {{
     height: 6px;
-    background-color: {BORDER};
+    background-color: {BORDER_STRONG};
     border-radius: 3px;
 }}
 QSlider::sub-page:horizontal {{

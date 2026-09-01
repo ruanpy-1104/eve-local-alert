@@ -56,18 +56,18 @@ logger = get_logger(__name__)
 REFRESH_GEOMETRY_EVERY = 30  # 每 N 帧重新定位窗口，跟随移动 / 缩放
 SELECTION_INTERVAL_MS = 150  # 框选模式下全窗口预览刷新间隔
 
-# 识别程度档位 -> 描述文案（0/25/50/75/100 各档有独立描述）
-_STRICT_LEVELS = {0: "宽松", 25: "较宽松", 50: "适中", 75: "较严格", 100: "严格"}
+# 识别程度档位 -> 描述文案（三档 0/50/100）
+_STRICT_LEVELS = {0: "宽松", 50: "适中", 100: "严格"}
 
 
 class _StrictScale(QWidget):
-    """识别程度滑块下方的数字刻度（0/25/50/75/100）。
+    """识别程度滑块下方的数字刻度（0/50/100）。
 
     直接按滑轨分数位置绘制，避免布局错位：左右各留出手柄半宽内边距，
-    使两端刻度与滑轨端点、中间刻度与滑轨 25%/50%/75% 分位精确对齐。
+    使两端刻度与滑轨端点、中间刻度与滑轨 50% 分位精确对齐。
     """
 
-    _VALUES = (0, 25, 50, 75, 100)
+    _VALUES = (0, 50, 100)
     _INSET = 8  # 滑块手柄半宽，刻度端点对齐到滑轨端点
 
     def __init__(self, parent=None):
@@ -375,30 +375,36 @@ class ColorPickerDialog(QDialog):
         section_strict = QLabel("识别程度")
         section_strict.setObjectName("sectionLabel")
         root.addWidget(section_strict)
-        # 网格布局：第一行 宽松/滑块/严格/数值 与滑块垂直对齐，第二行刻度只在滑块列下方
-        strict_grid = QGridLayout()
-        strict_grid.setHorizontalSpacing(10)
-        strict_grid.setVerticalSpacing(3)
         loose_lbl = QLabel("宽松")
         strict_lbl = QLabel("严格")
         loose_lbl.setObjectName("subtitleLabel")
         strict_lbl.setObjectName("subtitleLabel")
         self.strictness_slider = QSlider(Qt.Horizontal)
         self.strictness_slider.setRange(0, 100)
-        self.strictness_slider.setSingleStep(25)
-        self.strictness_slider.setPageStep(25)
-        self.strictness_slider.setValue(int(self.config.data["detection"].get("strictness", 50)))
+        self.strictness_slider.setSingleStep(50)
+        self.strictness_slider.setPageStep(50)
+        self.strictness_slider.setValue(
+            int(self.config.data["detection"].get("strictness", 0))
+        )
         self.strictness_slider.valueChanged.connect(self._on_strictness_changed)
         self.strictness_value = QLabel()
         self.strictness_value.setMinimumWidth(72)
         self.strictness_value.setAlignment(Qt.AlignCenter)
-        strict_grid.addWidget(loose_lbl, 0, 0)
-        strict_grid.addWidget(self.strictness_slider, 0, 1)
-        strict_grid.addWidget(strict_lbl, 0, 2)
-        strict_grid.addWidget(self.strictness_value, 0, 3)
-        strict_grid.setColumnStretch(1, 1)  # 滑块列占满剩余空间
-        strict_grid.addWidget(_StrictScale(), 1, 1)  # 刻度与滑块同列，居中于滑轨下方
-        root.addLayout(strict_grid)
+        # 滑块 + 刻度作为整体，置于水平布局中间并左右对称留白：
+        # 滑块（stretch 6）约占总宽 3/4，两侧各留 1/8，分布均匀
+        slider_block = QVBoxLayout()
+        slider_block.setSpacing(3)
+        slider_block.addWidget(self.strictness_slider)
+        slider_block.addWidget(_StrictScale())
+        strict_row = QHBoxLayout()
+        strict_row.setSpacing(10)
+        strict_row.addStretch(1)
+        strict_row.addWidget(loose_lbl)
+        strict_row.addLayout(slider_block, 6)
+        strict_row.addWidget(strict_lbl)
+        strict_row.addWidget(self.strictness_value)
+        strict_row.addStretch(1)
+        root.addLayout(strict_row)
         self._update_strictness_label()
 
         btn_row = QHBoxLayout()
@@ -439,8 +445,8 @@ class ColorPickerDialog(QDialog):
         self.strictness_value.setText(f"{value} · {level}")
 
     def _on_strictness_changed(self, value: int) -> None:
-        # 固定档位 0/25/50/75/100：拖动时吸附到最近档位
-        snapped = round(value / 25) * 25
+        # 固定档位 0/50/100：拖动时吸附到最近档位
+        snapped = round(value / 50) * 50
         if snapped != value:
             self.strictness_slider.blockSignals(True)
             self.strictness_slider.setValue(snapped)

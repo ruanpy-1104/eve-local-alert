@@ -94,3 +94,36 @@ class TestConfig:
         assert ra["sendkey"] == "SCT_keep"
         assert ra["cooldown_enabled"] is True
         assert ra["cooldown_minutes"] == 10
+
+    def test_strictness_migrated_from_five_tiers(self, tmp_path):
+        # 识别程度旧五档 -> 新三档：75->50、50->0、25->0、0/100 不变
+        from core.config import _migrate_strictness
+
+        assert _migrate_strictness(75) == 50
+        assert _migrate_strictness(50) == 0
+        assert _migrate_strictness(25) == 0
+        assert _migrate_strictness(0) == 0
+        assert _migrate_strictness(100) == 100
+        # 未知值就近归档到三档
+        assert _migrate_strictness(60) == 50
+        assert _migrate_strictness(20) == 0
+
+    def test_strictness_migrated_on_load(self, tmp_path):
+        # 加载旧配置时 strictness 自动迁移（默认 50 也归并到 0）
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps({"detection": {"strictness": 75}}), encoding="utf-8"
+        )
+        cfg = ConfigManager(path)
+        assert cfg.data["detection"]["strictness"] == 50
+
+        path2 = tmp_path / "config2.json"
+        path2.write_text(
+            json.dumps({"detection": {"strictness": 50}}), encoding="utf-8"
+        )
+        assert ConfigManager(path2).data["detection"]["strictness"] == 0
+
+    def test_strictness_default_is_zero(self):
+        from core.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["detection"]["strictness"] == 0

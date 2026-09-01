@@ -53,7 +53,7 @@ pip install -r requirements.txt
     "confirm_frames": 3,
     "downscale": 2,
     "colors": ["red", "orange_red", "orange", "gray_white"],
-    "strictness": 50
+    "strictness": 0
   },
   "alert": {
     "sound_file": "assets/alert.wav"
@@ -85,7 +85,7 @@ pip install -r requirements.txt
 | `detection.confirm_frames` | int | 3 | 连续命中帧数（时序确认）。 |
 | `detection.downscale` | int | 2 | 下采样倍数（1 为不缩放）。 |
 | `detection.colors` | string[] | 4 色 | 启用的警报颜色键（见 `core/colors.py` 的 `EVE_COLORS`）。 |
-| `detection.strictness` | int | 50 | 识别程度 0（宽松）~ 100（严格）。 |
+| `detection.strictness` | int | 0 | 识别程度三档：0（宽松）/ 50（适中）/ 100（严格）。旧版五档（0/25/50/75/100）加载时自动迁移：75→50、50→0、25→0、100 不变。 |
 | `alert.sound_file` | string | `"assets/alert.wav"` | 警报音相对项目根路径；缺失时回退系统蜂鸣。 |
 | `remote_alert.enabled` | bool | `false` | 远程预警开关（Server酱 微信推送）。**每次启动强制重置为 `false`**（见 `core/config.py` 的 `_load`），其余选项保留用户最后一次修改；关闭时不产生任何网络请求。 |
 | `remote_alert.sendkey` | string | `""` | Server酱 SendKey，经面板「远程预警」对话框引导获取；保存为明文本地配置。 |

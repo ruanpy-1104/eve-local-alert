@@ -24,7 +24,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "confirm_frames": 3,
         "downscale": 2,
         "colors": ["red", "orange_red", "orange", "gray_white"],
-        "strictness": 50,
+        # 识别程度三档：0（宽松）/ 50（适中）/ 100（严格）
+        "strictness": 0,
     },
     "alert": {
         "sound_file": "assets/alert.wav",
@@ -46,6 +47,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 # 旧版 config.json 中已废弃的检测字段（文字条形检测遗留），加载时自动剔除，避免传入 Detector 报错
 _OBSOLETE_DETECTION_KEYS = ("min_area", "min_aspect_ratio")
+
+# 识别程度从五档（0/25/50/75/100）收编为三档（0/50/100）的迁移映射：
+# 原 75（较严格）-> 50，原 50（适中）-> 0，100 不变，0/25 并入 0
+_STRICTNESS_MIGRATION = {0: 0, 25: 0, 50: 0, 75: 50, 100: 100}
+
+
+def _migrate_strictness(value: object) -> object:
+    """把旧五档识别程度迁移到新三档；未知值就近归档到 0/50/100。"""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return value
+    if v in _STRICTNESS_MIGRATION:
+        return _STRICTNESS_MIGRATION[v]
+    return min((0, 50, 100), key=lambda x: abs(x - v))
 
 
 def _normalize_detection(detection: dict) -> dict:
@@ -85,6 +101,10 @@ class ConfigManager:
             return copy.deepcopy(DEFAULT_CONFIG)
         if isinstance(data.get("detection"), dict):
             _normalize_detection(data["detection"])
+            # 识别程度档位迁移：五档(0/25/50/75/100) -> 三档(0/50/100)
+            data["detection"]["strictness"] = _migrate_strictness(
+                data["detection"].get("strictness", 0)
+            )
         # 远程预警每次启动都默认不开启（enabled 强制置 False），
         # 其余选项保留用户最后一次修改——避免用户忘记关闭导致意外联网推送。
         if isinstance(data.get("remote_alert"), dict):

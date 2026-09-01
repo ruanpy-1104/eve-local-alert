@@ -394,14 +394,8 @@ class ColorPickerDialog(QDialog):
         self._sync_colors_from_config()
         self._refresh_swatch_marks()
 
-        # ---- 识别程度：标题为纯文字（卡片外），滑块行放入卡片（与色块卡片一致） ----
+        # ---- 识别程度：标题为纯文字（无卡片），滑块行无边框、仅轨道有颜色 ----
         root.addWidget(self._make_section_title("识别程度"))
-
-        strict_group = QFrame()
-        strict_group.setStyleSheet(self._CARD_QSS)
-        strict_box = QVBoxLayout(strict_group)
-        strict_box.setContentsMargins(14, 12, 14, 12)
-        strict_box.setSpacing(10)
 
         loose_lbl = QLabel("宽松")
         strict_lbl = QLabel("严格")
@@ -419,8 +413,8 @@ class ColorPickerDialog(QDialog):
         self.strictness_value = QLabel()
         self.strictness_value.setMinimumWidth(76)
         self.strictness_value.setAlignment(Qt.AlignCenter)
-        # 滑块长度减半：与下方刻度统一固定宽，卡片内左右 stretch 对称居中；
-        # 轨道用轮廓色(与卡片背景区分)，填充主题蓝，手柄融入填充。
+        # 滑块长度减半：与下方刻度统一固定宽，整行左右 stretch 对称居中；
+        # 轨道用轮廓色(与背景区分)，填充主题蓝，手柄融入填充。
         self.strictness_slider.setFixedWidth(150)
         self._strict_scale = _StrictScale()
         self._strict_scale.setFixedWidth(150)
@@ -436,8 +430,7 @@ class ColorPickerDialog(QDialog):
         slider_row.addWidget(strict_lbl)
         slider_row.addWidget(self.strictness_value)
         slider_row.addStretch(1)
-        strict_box.addLayout(slider_row)
-        root.addWidget(strict_group)
+        root.addLayout(slider_row)
         self._update_strictness_label()
 
         # 底部少量弹性空白：内容紧凑，按钮行沉底，与识别程度卡片间隔留白自然

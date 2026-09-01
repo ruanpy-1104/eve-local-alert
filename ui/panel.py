@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -317,30 +318,37 @@ class MonitorWorker(QThread):
 
 
 class ColorPickerDialog(QDialog):
-    """颜色选择：色块勾选警报颜色 + 识别程度（宽松~严格）滑块。"""
+    """颜色选择：色块勾选警报颜色 + 识别程度（三档滑块）。
+
+    布局采用主题统一的卡片分组（QGroupBox）：上「警报颜色」、下「识别程度」，
+    底部为操作按钮行，左侧动态显示已选色数与应用反馈。
+    """
 
     def __init__(self, config: ConfigManager, parent=None):
         super().__init__(parent)
         self.config = config
 
         self.setWindowTitle("颜色选择 · 警报颜色")
-        self.setFixedSize(520, 430)
+        self.setFixedSize(520, 450)
         self._build_ui()
 
     # ---- UI ----
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 18, 22, 18)
-        root.setSpacing(14)
+        root.setContentsMargins(18, 16, 18, 16)
+        root.setSpacing(12)
 
-        self.status_label = QLabel("勾选需要警报的颜色\n误报时往严格调，漏报时往宽松调")
-        self.status_label.setObjectName("descriptionLabel")
-        root.addWidget(self.status_label)
+        desc = QLabel("勾选需要警报的颜色，误报时往严格调，漏报时往宽松调")
+        desc.setObjectName("descriptionLabel")
+        desc.setWordWrap(True)
+        root.addWidget(desc)
 
-        # ---- 警报颜色（色块，勾选显示对勾） ----
-        section_color = QLabel("警报颜色")
-        section_color.setObjectName("sectionLabel")
-        root.addWidget(section_color)
+        # ---- 警报颜色（卡片分组：色块勾选 + 动态计数） ----
+        color_group = QGroupBox("警报颜色")
+        color_box = QVBoxLayout(color_group)
+        color_box.setContentsMargins(14, 8, 14, 12)
+        color_box.setSpacing(10)
+
         palette_grid = QGridLayout()
         palette_grid.setHorizontalSpacing(10)
         palette_grid.setVerticalSpacing(10)
@@ -352,7 +360,7 @@ class ColorPickerDialog(QDialog):
             text_color = "black" if luminance > 150 else "white"
             btn = QPushButton("")
             btn.setCheckable(True)
-            btn.setFixedSize(60, 40)
+            btn.setFixedSize(64, 44)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setToolTip(f"{info['label']}（{name}）")
             btn.setStyleSheet(
@@ -367,14 +375,23 @@ class ColorPickerDialog(QDialog):
         palette_row.addStretch()
         palette_row.addLayout(palette_grid)
         palette_row.addStretch()
-        root.addLayout(palette_row)
+        color_box.addLayout(palette_row)
+
+        self.color_hint = QLabel()
+        self.color_hint.setObjectName("statusLabel")
+        self.color_hint.setAlignment(Qt.AlignCenter)
+        color_box.addWidget(self.color_hint)
+        root.addWidget(color_group)
         self._sync_colors_from_config()
         self._refresh_swatch_marks()
+        self._update_color_hint()
 
-        # ---- 识别程度（左宽松 ~ 右严格，刻度紧贴滑块下方） ----
-        section_strict = QLabel("识别程度")
-        section_strict.setObjectName("sectionLabel")
-        root.addWidget(section_strict)
+        # ---- 识别程度（卡片分组：滑块 + 刻度，左右对称留白） ----
+        strict_group = QGroupBox("识别程度")
+        strict_box = QVBoxLayout(strict_group)
+        strict_box.setContentsMargins(14, 8, 14, 10)
+        strict_box.setSpacing(3)
+
         loose_lbl = QLabel("宽松")
         strict_lbl = QLabel("严格")
         loose_lbl.setObjectName("subtitleLabel")
@@ -390,25 +407,32 @@ class ColorPickerDialog(QDialog):
         self.strictness_value = QLabel()
         self.strictness_value.setMinimumWidth(72)
         self.strictness_value.setAlignment(Qt.AlignCenter)
-        # 滑块 + 刻度作为整体，置于水平布局中间并左右对称留白：
-        # 滑块（stretch 6）约占总宽 3/4，两侧各留 1/8，分布均匀
+        # 滑块（含下方刻度）作为整体居中：两侧对称留白，滑块约占分组内宽 3/4
         slider_block = QVBoxLayout()
         slider_block.setSpacing(3)
         slider_block.addWidget(self.strictness_slider)
         slider_block.addWidget(_StrictScale())
-        strict_row = QHBoxLayout()
-        strict_row.setSpacing(10)
-        strict_row.addStretch(1)
-        strict_row.addWidget(loose_lbl)
-        strict_row.addLayout(slider_block, 6)
-        strict_row.addWidget(strict_lbl)
-        strict_row.addWidget(self.strictness_value)
-        strict_row.addStretch(1)
-        root.addLayout(strict_row)
+        slider_row = QHBoxLayout()
+        slider_row.setSpacing(10)
+        slider_row.addStretch(1)
+        slider_row.addWidget(loose_lbl)
+        slider_row.addLayout(slider_block, 6)
+        slider_row.addWidget(strict_lbl)
+        slider_row.addWidget(self.strictness_value)
+        slider_row.addStretch(1)
+        strict_box.addLayout(slider_row)
+        root.addWidget(strict_group)
         self._update_strictness_label()
 
+        root.addStretch(1)
+
+        # ---- 底部：应用反馈（左） + 操作按钮（右） ----
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
+        self.apply_status = QLabel("")
+        self.apply_status.setObjectName("statusLabel")
+        btn_row.addWidget(self.apply_status)
+        btn_row.addStretch()
         self.apply_btn = QPushButton("应用")
         self.apply_btn.setProperty("role", theme.ROLE_PRIMARY)
         self.close_btn = QPushButton("关闭")
@@ -416,7 +440,6 @@ class ColorPickerDialog(QDialog):
         self.close_btn.setMinimumHeight(36)
         self.apply_btn.clicked.connect(self._apply)
         self.close_btn.clicked.connect(self.close)
-        btn_row.addStretch()
         btn_row.addWidget(self.apply_btn)
         btn_row.addWidget(self.close_btn)
         root.addLayout(btn_row)
@@ -455,15 +478,28 @@ class ColorPickerDialog(QDialog):
         self._update_strictness_label()
 
     def _on_color_toggled(self, _name: str) -> None:
-        """勾选颜色变化：刷新对勾标记。"""
+        """勾选颜色变化：刷新对勾标记与已选计数。"""
         self._refresh_swatch_marks()
+        self._update_color_hint()
+
+    def _update_color_hint(self) -> None:
+        """色块下方动态提示：已选颜色数 / 总数。"""
+        count = len(self._active_colors())
+        self.color_hint.setText(f"已选 {count} / {len(self._color_buttons)} 色，命中即警报")
 
     def _apply(self) -> None:
         det = dict(self.config.data["detection"])
         det["colors"] = self._active_colors()
         det["strictness"] = self.strictness_slider.value()
         self.config.update("detection", det)
-        self.status_label.setText("已应用")
+        # 底部左侧短暂显示绿色「已应用」反馈（1.5 秒后自动清除）
+        self.apply_status.setText("已应用")
+        self.apply_status.setStyleSheet(f"color:{theme.SUCCESS};font-weight:600;")
+        QTimer.singleShot(1500, self._clear_apply_status)
+
+    def _clear_apply_status(self) -> None:
+        self.apply_status.clear()
+        self.apply_status.setStyleSheet("")
 
 
 class PauseSettingsDialog(QDialog):

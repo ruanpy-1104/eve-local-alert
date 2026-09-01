@@ -413,18 +413,23 @@ class ColorPickerDialog(QDialog):
         self.strictness_value = QLabel()
         self.strictness_value.setMinimumWidth(76)
         self.strictness_value.setAlignment(Qt.AlignCenter)
-        # 滑块（含下方刻度）撑满剩余宽度：两端「宽松 / 严格」标签紧贴滑块，
-        # 数值标签紧随其后；整行无卡片框，背景与对话框一致、仅轨道有颜色。
+        # 滑块长度减半：与下方刻度统一固定宽，整行左右 stretch 对称居中；
+        # 轨道用轮廓色(与背景区分)，填充主题蓝，手柄融入填充。
+        self.strictness_slider.setFixedWidth(150)
+        self._strict_scale = _StrictScale()
+        self._strict_scale.setFixedWidth(150)
         slider_block = QVBoxLayout()
         slider_block.setSpacing(4)
         slider_block.addWidget(self.strictness_slider)
-        slider_block.addWidget(_StrictScale())
+        slider_block.addWidget(self._strict_scale)
         slider_row = QHBoxLayout()
         slider_row.setSpacing(10)
+        slider_row.addStretch(1)
         slider_row.addWidget(loose_lbl)
-        slider_row.addLayout(slider_block, 1)
+        slider_row.addLayout(slider_block)
         slider_row.addWidget(strict_lbl)
         slider_row.addWidget(self.strictness_value)
+        slider_row.addStretch(1)
         root.addLayout(slider_row)
         self._update_strictness_label()
 

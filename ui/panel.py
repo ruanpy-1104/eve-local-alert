@@ -109,9 +109,8 @@ def bgr_to_qimage(frame: np.ndarray) -> QImage:
 class MonitorWorker(QThread):
     """后台监控线程：定位窗口 -> 捕获 ROI -> 检测红名 -> 触发警报。"""
 
-    detected = Signal()       # 命中并触发警报
     preview = Signal(object)  # BGR 预览帧（numpy ndarray）
-    status = Signal(str)      # 状态文本
+    status = Signal(str)      # 状态文本（富文本：敌袭/安全带颜色）
     error = Signal(str)       # 致命错误
     alert_paused = Signal(bool)  # 播报暂停状态：True=已暂停，False=红名离开自动恢复
     window_lost = Signal(str)    # 目标窗口已关闭：监控结束，面板退回未选择状态
@@ -126,6 +125,22 @@ class MonitorWorker(QThread):
         self._alerting = False  # 当前是否正在播放警报（供 UI 线程只读查询）
         self._window_lost = False  # 目标窗口已关闭（抑制 run() 的"已停止"状态覆盖）
         self._paused_miss_start: float | None = None  # 暂停态下连续未命中起始时刻（自动恢复防抖）
+
+    def _status_text(self, fps: float, hit: bool) -> str:
+        """监控状态栏富文本：命中「敌袭」红色加粗增大，未命中「安全」绿色正常大小。
+
+        前缀「监控中 | FPS」不随命中状态改变样式。
+        """
+        state = (
+            f'<span style="color:{theme.DANGER};font-weight:bold;font-size:15px;">敌袭</span>'
+            if hit
+            else f'<span style="color:{theme.SUCCESS};">安全</span>'
+        )
+        return f"监控中 | {fps:.1f} FPS | {state}"
+
+    def _approx_fps(self, status_frames: int, last_status: float) -> float:
+        """当前刷新窗口内的近似 FPS（状态切换时立即刷新状态栏用）。"""
+        return status_frames / max(time.perf_counter() - last_status, 1e-6)
 
     def stop(self) -> None:
         self._stop.set()
@@ -177,7 +192,7 @@ class MonitorWorker(QThread):
         capture = Capture()
         detector: Detector | None = None
         det_cfg_key: str | None = None
-        hit_count = 0
+        last_hit = False  # 上一帧是否命中（状态栏「敌袭/安全」实时指示）
         frame_count = 0
         last_status = time.perf_counter()
         status_frames = 0
@@ -240,13 +255,14 @@ class MonitorWorker(QThread):
                 # 播报暂停时：即使命中也不报警；目标持续未出现达到设置延时后才自动恢复
                 # （进出站黑屏等短暂无检测不会误解除暂停）。
                 hit = detector.detect(frame)
+                last_hit = hit  # 供状态栏「敌袭/安全」实时指示
                 if hit:
                     self._paused_miss_start = None  # 目标仍在视野：重置无目标计时
                     if not self._alerting and not self._paused.is_set():
                         self._alerting = True
                         alerter.start()
-                        hit_count += 1  # 仅作「敌袭」标记（状态栏显示，不计数）
-                        self.detected.emit()
+                        # 命中：立即刷新状态栏「敌袭」（红色加粗增大），不等每秒刷新
+                        self.status.emit(self._status_text(self._approx_fps(status_frames, last_status), True))
                         # 远程预警（默认关闭）：仅在本轮警报开始时发一条微信提醒；
                         # 发送需同时满足内置 5 秒冷却与「敌方已消失」，独立线程异步发送
                         send_alert_async(cfg.get("remote_alert") or {})
@@ -260,6 +276,8 @@ class MonitorWorker(QThread):
                     if self._alerting:
                         self._alerting = False
                         alerter.stop()
+                        # 未命中：立即刷新状态栏「安全」（绿色正常大小），不等每秒刷新
+                        self.status.emit(self._status_text(self._approx_fps(status_frames, last_status), False))
                     if self._paused.is_set():
                         resume_delay = float(cfg["alert"].get("resume_delay", 10) or 0)
                         now = time.perf_counter()
@@ -290,11 +308,8 @@ class MonitorWorker(QThread):
                     fps = status_frames / max(now - last_status, 1e-6)
                     status_frames = 0
                     last_status = now
-                    # 状态栏：遇过敌袭则标记「敌袭」（不显示次数）
-                    status = f"监控中 | {fps:.1f} FPS"
-                    if hit_count > 0:
-                        status += " | 敌袭"
-                    self.status.emit(status)
+                    # 状态栏富文本：命中「敌袭」红粗增大，未命中「安全」绿正常；前缀不变
+                    self.status.emit(self._status_text(fps, last_hit))
                 time.sleep(max(0.0, interval - elapsed))
         finally:
             alerter.stop()  # 确保退出监控时停止警报
@@ -1166,7 +1181,6 @@ class ControlPanel(QWidget):
         self._worker = MonitorWorker(self.config, self._root, self)
         self._worker.preview.connect(self._on_preview)
         self._worker.status.connect(self.status_label.setText)
-        self._worker.detected.connect(self._on_detected)
         self._worker.error.connect(self._on_error)
         self._worker.alert_paused.connect(self._on_alert_paused)
         self._worker.window_lost.connect(self._on_window_lost)
@@ -1196,13 +1210,6 @@ class ControlPanel(QWidget):
             self.preview.set_placeholder("目标窗口已最小化，请恢复窗口")
             return
         self.preview.set_image(bgr_to_qimage(frame))
-
-    def _on_detected(self) -> None:
-        self.status_label.setStyleSheet(
-            f"color:{theme.DANGER};font-weight:bold;font-size:13px;"
-        )
-        self.status_label.setText("检测到目标颜色，正在警报！")
-        QTimer.singleShot(1200, self._restore_status_style)
 
     def _on_error(self, message: str) -> None:
         logger.error("监控出错：%s", message)
@@ -1258,9 +1265,6 @@ class ControlPanel(QWidget):
         self.pause_btn.blockSignals(False)
         if not paused:
             self.status_label.setText("红名已离开，预警已自动恢复")
-
-    def _restore_status_style(self) -> None:
-        self.status_label.setStyleSheet("")
 
     # ---- 颜色选择 / 预览 ----
     def _open_color_picker(self) -> None:

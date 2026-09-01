@@ -413,24 +413,26 @@ class ColorPickerDialog(QDialog):
         self.strictness_value = QLabel()
         self.strictness_value.setMinimumWidth(76)
         self.strictness_value.setAlignment(Qt.AlignCenter)
-        # 滑块长度减半：与下方刻度统一固定宽，整行左右 stretch 对称居中；
-        # 轨道用轮廓色(与背景区分)，填充主题蓝，手柄融入填充。
+        self.strictness_value.setContentsMargins(12, 0, 0, 0)  # 增大「严格」与「0·宽松」间距
+        # 滑块长度减半：与下方刻度统一固定宽；「宽松 / 严格 / 数值」与滑块轨道同列对齐
+        #（垂直居中于滑块行），刻度单独一行放在滑块正下方。
         self.strictness_slider.setFixedWidth(150)
         self._strict_scale = _StrictScale()
         self._strict_scale.setFixedWidth(150)
-        slider_block = QVBoxLayout()
-        slider_block.setSpacing(4)
-        slider_block.addWidget(self.strictness_slider)
-        slider_block.addWidget(self._strict_scale)
-        slider_row = QHBoxLayout()
-        slider_row.setSpacing(10)
-        slider_row.addStretch(1)
-        slider_row.addWidget(loose_lbl)
-        slider_row.addLayout(slider_block)
-        slider_row.addWidget(strict_lbl)
-        slider_row.addWidget(self.strictness_value)
-        slider_row.addStretch(1)
-        root.addLayout(slider_row)
+        strict_grid = QGridLayout()
+        strict_grid.setHorizontalSpacing(10)
+        strict_grid.setVerticalSpacing(4)
+        strict_grid.addWidget(loose_lbl, 0, 0, Qt.AlignVCenter)
+        strict_grid.addWidget(self.strictness_slider, 0, 1, Qt.AlignVCenter)
+        strict_grid.addWidget(strict_lbl, 0, 2, Qt.AlignVCenter)
+        strict_grid.addWidget(self.strictness_value, 0, 3, Qt.AlignVCenter)
+        strict_grid.addWidget(self._strict_scale, 1, 1)  # 刻度在滑块列正下方
+        # 整行左右对称居中
+        strict_row = QHBoxLayout()
+        strict_row.addStretch(1)
+        strict_row.addLayout(strict_grid)
+        strict_row.addStretch(1)
+        root.addLayout(strict_row)
         self._update_strictness_label()
 
         # 底部少量弹性空白：内容紧凑，按钮行沉底，与识别程度卡片间隔留白自然

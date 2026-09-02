@@ -13,12 +13,23 @@
 
 ### 1.2 安装依赖
 
+**uv（推荐）**：依赖声明在 `pyproject.toml`，版本锁定在 `uv.lock`。
+
 ```powershell
-cd "d:\Code\EVE Alert"
+uv sync                 # 创建 .venv 并按 uv.lock 安装（含 dev 依赖 pytest）
+uv run python main.py   # 运行，无需手动激活虚拟环境
+```
+
+**venv + pip（备选）**：`requirements.txt` / `requirements-dev.txt` 保留可用。
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python main.py
 ```
+
+> 两份依赖清单与 `pyproject.toml` 内容一致；改依赖时请同步更新，避免两条路径装出不同版本。
 
 ### 1.3 依赖说明
 

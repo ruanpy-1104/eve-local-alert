@@ -228,7 +228,8 @@ flowchart LR
 ```text
 ├── main.py                 # 程序入口（UI 控制面板 / --cli 无 UI 闭环）
 ├── config.example.json     # 配置模板（运行时 config.json 不入库，缺失时自动用默认值）
-├── requirements.txt        # 依赖清单
+├── pyproject.toml          # 依赖声明（uv 推荐）+ uv.lock 版本锁定
+├── requirements.txt        # 依赖清单（venv + pip 备选）
 ├── pytest.ini              # pytest 配置
 ├── core/
 │   ├── window_locator.py   # 窗口定位：按进程名 / 标题命中 + 最小化检测

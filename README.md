@@ -4,6 +4,37 @@
 
 玩家选择目标程序窗口，在预览画面中框选任意区域，工具在该区域内按所选颜色识别敌对目标，命中即持续触发本地警报。
 
+## 下载安装
+
+> 运行环境：**Windows 10 / 11（64 位）**。不需要预先安装 Python 或任何运行库。
+
+### 第一步：下载
+
+点这里打开下载页 → **[📥 下载最新版](https://github.com/ruanpy-1104/eve-local-alert/releases/latest)**
+
+页面下方 **Assets（附件）** 里有两个文件，**任选一个下载即可，不用都下**：
+
+| 文件名 | 推荐 | 怎么用 | 区别 |
+| --- | --- | --- | --- |
+| **`eve-alert-1.0.10.exe`**<br>（约 100 MB） | ⭐ **不确定就选这个** | 下载后**双击直接运行**，不用安装、不用解压 | 全部内容压在一个 exe 里。每次启动要先自解压到临时目录，**启动慢几秒** |
+| `eve-alert-1.0.10-portable.zip`<br>（约 104 MB） | 想启动更快时选 | **先解压**整个压缩包到任意文件夹，再双击里面的 `eve-alert.exe` | 解压后是 `eve-alert.exe` + `_internal` 文件夹，**启动快**。注意：`eve-alert.exe` 必须和 `_internal` 放在一起，单独拷出来会打不开 |
+
+文件名里的 `1.0.10` 是版本号，会随新版本变化，认准 `.exe` 和 `-portable.zip` 后缀即可。两个包功能完全一样，**只有启动速度和存放方式的区别**。
+
+### 第二步：运行
+
+双击后如果 Windows 弹出蓝色的「**Windows 已保护你的电脑**」提示：点「**更多信息**」→「**仍要运行**」。
+
+这是因为本项目没有购买微软代码签名证书（一年数千元），所有新发布的小众软件都会有这个提示，不代表有病毒。个别杀毒软件可能对单文件 exe 误报，若被拦截可改用 portable.zip 版，或在杀软里添加信任。
+
+### 关于卸载与个人数据
+
+绿色软件，不写注册表：
+
+- 配置和日志存在 `%APPDATA%\eve-alert`（地址栏粘贴这个路径可直达），**不会**在程序旁边生成文件
+- 卸载：直接删掉 exe（或解压出来的文件夹）即可；想彻底清干净，把上面那个 `eve-alert` 文件夹也删掉
+- 升级：下载新版覆盖旧文件即可，你的框选区域、颜色等设置会保留
+
 ## 特性
 
 - **按窗口内容捕获**：PrintWindow 直接渲染所选窗口自身画面，即使被其他应用遮挡也只监控该窗口，不影响其他程序操作
@@ -25,7 +56,10 @@
 ```text
 ├── main.py                 # 程序入口（UI 控制面板 / --cli 无 UI 闭环）
 ├── config.example.json     # 配置模板（运行时 config.json 不入库，缺失时自动用默认值）
-├── requirements.txt        # 依赖清单
+├── pyproject.toml          # 项目元数据与依赖声明（uv 推荐）
+├── uv.lock                 # 依赖版本锁定文件（入库，保证各机器环境一致）
+├── requirements.txt        # 依赖清单（venv + pip 备选）
+├── requirements-dev.txt    # 开发依赖（含 pytest）
 ├── pytest.ini              # pytest 配置
 ├── CHANGELOG.md            # 更新日志
 ├── docs/
@@ -53,10 +87,54 @@
     └── logo.svg            # 应用图标（SVG）
 ```
 
-## 快速开始
+## 从源码运行（开发者）
+
+环境：Windows 10 / 11（x64）+ Python 3.11 及以上。
+
+### 方式一：uv（推荐）
+
+[**uv**](https://docs.astral.sh/uv/) 比 venv + pip 快得多，自动创建虚拟环境，并按 `uv.lock` 锁定依赖版本，各机器环境一致。
 
 ```powershell
-cd "d:\Code\EVE Alert"
+# 1. 安装 uv（任选其一，只需一次）
+winget install astral-sh.uv
+# 或：powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. 克隆并进入项目
+git clone https://github.com/ruanpy-1104/eve-local-alert.git
+cd eve-local-alert
+
+# 3. 安装依赖（自动创建 .venv 并按 uv.lock 锁定版本）
+uv sync
+
+# 4. 首次运行：复制配置模板（可选，缺失时程序自动使用默认值）
+Copy-Item config.example.json config.json
+
+# 5. 运行
+uv run python main.py
+```
+
+> 之后每次只改动了依赖（升级 / 新增）再跑一次 `uv sync` 即可；`uv run` 会直接使用项目内的 `.venv`，无需手动激活。
+
+常用命令：
+
+| 命令 | 作用 |
+| --- | --- |
+| `uv sync` | 按 `uv.lock` 安装 / 同步依赖（含 pytest 等 dev 依赖） |
+| `uv sync --no-dev` | 只装运行依赖，不装 pytest |
+| `uv sync --extra dxgi` | 额外安装可选的 `dxcam`（独占全屏下的 DXGI 捕获） |
+| `uv run python main.py` | 在项目环境里运行，无需手动激活 venv |
+| `uv add <包名>` | 新增依赖，自动写入 `pyproject.toml` 并更新 `uv.lock` |
+| `uv lock --upgrade` | 升级锁定的依赖版本 |
+
+### 方式二：venv + pip
+
+不想装 uv 也可以，依赖清单 `requirements.txt` / `requirements-dev.txt` 保留可用：
+
+```powershell
+git clone https://github.com/ruanpy-1104/eve-local-alert.git
+cd eve-local-alert
+
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -66,6 +144,8 @@ Copy-Item config.example.json config.json
 
 python main.py
 ```
+
+> 两份依赖清单与 `pyproject.toml` 内容一致，改依赖时请同步更新，避免两条路径装出不同版本。
 
 ## 使用流程
 
@@ -79,6 +159,10 @@ python main.py
 ## 测试
 
 ```powershell
+# uv（推荐）：uv sync 已包含 pytest，无需额外安装
+uv run python -m pytest
+
+# venv + pip
 pip install -r requirements-dev.txt
 python -m pytest
 ```

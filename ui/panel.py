@@ -126,18 +126,35 @@ class MonitorWorker(QThread):
         self._alerting = False  # 当前是否正在播放警报（供 UI 线程只读查询）
         self._window_lost = False  # 目标窗口已关闭（抑制 run() 的"已停止"状态覆盖）
         self._paused_since: float | None = None  # 暂停开始时刻（最短持续时长计时起点）
+        self._last_hit = False  # 最近一帧命中状态（供顶部状态栏即时刷新）
+        self._last_fps = 0.0  # 最近一次状态栏 FPS（供顶部状态栏即时刷新）
 
     def _status_text(self, fps: float, hit: bool) -> str:
-        """监控状态栏富文本：命中「敌袭」红色加粗增大，未命中「安全」绿色正常大小。
+        """监控状态栏富文本。
 
-        前缀「监控中 | FPS」不随命中状态改变样式。
+        暂停中：状态标签为黄色加粗「已暂停」（不随命中闪烁）；
+        未暂停：命中「敌袭」红色加粗增大，未命中「安全」绿色正常大小。
+        前缀「监控中 | FPS」不随暂停 / 命中状态改变样式。
         """
-        state = (
-            f'<span style="color:{theme.DANGER};font-weight:bold;font-size:15px;">敌袭</span>'
-            if hit
-            else f'<span style="color:{theme.SUCCESS};">安全</span>'
-        )
+        if self._paused.is_set():
+            state = (
+                f'<span style="color:{theme.YELLOW};font-weight:bold;font-size:15px;">已暂停</span>'
+            )
+        elif hit:
+            state = (
+                f'<span style="color:{theme.DANGER};font-weight:bold;font-size:15px;">敌袭</span>'
+            )
+        else:
+            state = f'<span style="color:{theme.SUCCESS};">安全</span>'
         return f"监控中 | {fps:.1f} FPS | {state}"
+
+    def refresh_status(self) -> None:
+        """按当前暂停 / 命中状态立即补发一条顶部状态栏文本。
+
+        状态切换（如面板点击暂停 / 恢复）时调用，不必等下一周期（最长 1 秒）
+        才看到状态变化。
+        """
+        self.status.emit(self._status_text(self._last_fps, self._last_hit))
 
     def _approx_fps(self, status_frames: int, last_status: float) -> float:
         """当前刷新窗口内的近似 FPS（状态切换时立即刷新状态栏用）。"""
@@ -185,6 +202,7 @@ class MonitorWorker(QThread):
             process_name=cfg["window"].get("process_name"),
         )
         interval = 1.0 / float(cfg["loop"].get("fps", 12))
+        self._last_fps = 1.0 / interval  # 首个周期前的 FPS 占位（供暂停即时刷新）
 
         sound_file = cfg["alert"].get("sound_file")
         if sound_file:
@@ -194,7 +212,6 @@ class MonitorWorker(QThread):
         capture = Capture()
         detector: Detector | None = None
         det_cfg_key: str | None = None
-        last_hit = False  # 上一帧是否命中（状态栏「敌袭/安全」实时指示）
         frame_count = 0
         last_status = time.perf_counter()
         status_frames = 0
@@ -257,13 +274,14 @@ class MonitorWorker(QThread):
                 # 播报暂停时：即使命中也不报警；暂停至少持续设定时长（resume_delay），
                 # 时长满后目标不在视野才自动恢复——进出空间站等短暂无检测不会提前解除。
                 hit = detector.detect(frame)
-                last_hit = hit  # 供状态栏「敌袭/安全」实时指示
+                self._last_hit = hit  # 供状态栏「敌袭/安全/已暂停」实时指示
                 if hit:
                     if not self._alerting and not self._paused.is_set():
                         self._alerting = True
                         alerter.start()
                         # 命中：立即刷新状态栏「敌袭」（红色加粗增大），不等每秒刷新
-                        self.status.emit(self._status_text(self._approx_fps(status_frames, last_status), True))
+                        self._last_fps = self._approx_fps(status_frames, last_status)
+                        self.status.emit(self._status_text(self._last_fps, True))
                         # 远程预警（默认关闭）：仅在本轮警报开始时发一条微信提醒；
                         # 发送需同时满足内置 5 秒冷却与「敌方已消失」，独立线程异步发送
                         send_alert_async(cfg.get("remote_alert") or {})
@@ -278,7 +296,8 @@ class MonitorWorker(QThread):
                         self._alerting = False
                         alerter.stop()
                         # 未命中：立即刷新状态栏「安全」（绿色正常大小），不等每秒刷新
-                        self.status.emit(self._status_text(self._approx_fps(status_frames, last_status), False))
+                        self._last_fps = self._approx_fps(status_frames, last_status)
+                        self.status.emit(self._status_text(self._last_fps, False))
                     if self._paused.is_set():
                         resume_delay = float(cfg["alert"].get("resume_delay", 10) or 0)
                         # 暂停至少持续设定时长，且当前无目标时才自动恢复（目标在视野时永不恢复）
@@ -304,11 +323,11 @@ class MonitorWorker(QThread):
                 elapsed = time.perf_counter() - started
                 now = time.perf_counter()
                 if now - last_status >= 1.0:
-                    fps = status_frames / max(now - last_status, 1e-6)
+                    self._last_fps = status_frames / max(now - last_status, 1e-6)
                     status_frames = 0
                     last_status = now
-                    # 状态栏富文本：命中「敌袭」红粗增大，未命中「安全」绿正常；前缀不变
-                    self.status.emit(self._status_text(fps, last_hit))
+                    # 状态栏富文本：暂停「已暂停」黄粗 / 命中「敌袭」红粗增大 / 未命中「安全」绿正常；前缀不变
+                    self.status.emit(self._status_text(self._last_fps, self._last_hit))
                 time.sleep(max(0.0, interval - elapsed))
         finally:
             alerter.stop()  # 确保退出监控时停止警报
@@ -405,7 +424,7 @@ class ColorPickerDialog(QDialog):
         self.strictness_slider.setPageStep(50)
         self.strictness_slider.setMinimumHeight(24)
         self.strictness_slider.setValue(
-            int(self.config.data["detection"].get("strictness", 0))
+            int(self.config.data["detection"].get("strictness", 50))
         )
         self.strictness_slider.valueChanged.connect(self._on_strictness_changed)
         self.strictness_value = QLabel()
@@ -1298,8 +1317,8 @@ class ControlPanel(QWidget):
             return
         self._worker.set_paused(checked)
         self.pause_btn.setText("预警已暂停" if checked else "暂停预警")
-        if checked:
-            self.status_label.setText("预警已暂停：命中不再报警，达最短时长后目标不在视野即自动恢复")
+        # 顶部状态信息立即切换为黄色「已暂停」（暂停）或恢复「敌袭/安全」常态
+        self._worker.refresh_status()
 
     def _on_alert_paused(self, paused: bool) -> None:
         """工作线程同步暂停状态（自动恢复播报时取消按钮勾选）。"""

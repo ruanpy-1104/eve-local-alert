@@ -27,6 +27,7 @@ DANGER = "#e63946"        # 警报 / 危险（红）
 DANGER_HOVER = "#ff4d5a"
 SUCCESS = "#2ecc71"       # 成功 / 勾选
 WARN = "#e67e22"          # 警告 / 错误
+YELLOW = "#ffcf3d"        # 暂停等中性提示（黄）
 
 # 按钮角色约定（QPushButton 动态属性 role）
 ROLE_PRIMARY = "primary"

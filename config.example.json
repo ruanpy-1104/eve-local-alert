@@ -18,7 +18,7 @@
       "orange",
       "gray_white"
     ],
-    "strictness": 0
+    "strictness": 50
   },
   "alert": {
     "sound_file": "assets/alert.wav",

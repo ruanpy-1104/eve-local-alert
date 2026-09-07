@@ -96,11 +96,11 @@ class TestConfig:
         assert ra["cooldown_minutes"] == 10
 
     def test_strictness_migrated_from_five_tiers(self, tmp_path):
-        # 识别程度旧五档 -> 新三档：75->50、50->0、25->0、0/100 不变
+        # 旧五档遗留值归档：75->50、25->0；三档取值（0/50/100）原样保留
         from core.config import _migrate_strictness
 
         assert _migrate_strictness(75) == 50
-        assert _migrate_strictness(50) == 0
+        assert _migrate_strictness(50) == 50
         assert _migrate_strictness(25) == 0
         assert _migrate_strictness(0) == 0
         assert _migrate_strictness(100) == 100
@@ -109,7 +109,7 @@ class TestConfig:
         assert _migrate_strictness(20) == 0
 
     def test_strictness_migrated_on_load(self, tmp_path):
-        # 加载旧配置时 strictness 自动迁移（默认 50 也归并到 0）
+        # 加载旧配置：五档遗留值自动归档；三档取值原样保留（用户记忆不被二次迁移）
         path = tmp_path / "config.json"
         path.write_text(
             json.dumps({"detection": {"strictness": 75}}), encoding="utf-8"
@@ -121,9 +121,9 @@ class TestConfig:
         path2.write_text(
             json.dumps({"detection": {"strictness": 50}}), encoding="utf-8"
         )
-        assert ConfigManager(path2).data["detection"]["strictness"] == 0
+        assert ConfigManager(path2).data["detection"]["strictness"] == 50
 
-    def test_strictness_default_is_zero(self):
+    def test_strictness_default_is_fifty(self):
         from core.config import DEFAULT_CONFIG
 
-        assert DEFAULT_CONFIG["detection"]["strictness"] == 0
+        assert DEFAULT_CONFIG["detection"]["strictness"] == 50

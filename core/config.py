@@ -24,8 +24,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "confirm_frames": 3,
         "downscale": 2,
         "colors": ["red", "orange_red", "orange", "gray_white"],
-        # 识别程度三档：0（宽松）/ 50（适中）/ 100（严格）
-        "strictness": 0,
+        # 识别程度三档：0（宽松）/ 50（适中）/ 100（严格）。
+        # 首次使用（配置缺失 / 新装）默认 50（适中），应用保存后按用户上次记忆值持久化
+        "strictness": 50,
     },
     "alert": {
         "sound_file": "assets/alert.wav",
@@ -48,20 +49,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # 旧版 config.json 中已废弃的检测字段（文字条形检测遗留），加载时自动剔除，避免传入 Detector 报错
 _OBSOLETE_DETECTION_KEYS = ("min_area", "min_aspect_ratio")
 
-# 识别程度从五档（0/25/50/75/100）收编为三档（0/50/100）的迁移映射：
-# 原 75（较严格）-> 50，原 50（适中）-> 0，100 不变，0/25 并入 0
-_STRICTNESS_MIGRATION = {0: 0, 25: 0, 50: 0, 75: 50, 100: 100}
+# 识别程度从五档（0/25/50/75/100）收编为三档（0/50/100）的迁移：
+# 旧版遗留的 25/75 归档到最近三档；已在三档范围内的取值（0/50/100）原样保留——
+# 若对用户在三档下保存的 50（适中）重复归并，重启后会被误改成 0，破坏「记忆上次设置」。
+_VALID_STRICTNESS = (0, 50, 100)
 
 
 def _migrate_strictness(value: object) -> object:
-    """把旧五档识别程度迁移到新三档；未知值就近归档到 0/50/100。"""
+    """把旧五档遗留值归档到三档 0/50/100；三档取值原样保留（不做二次迁移）。"""
     try:
         v = int(value)
     except (TypeError, ValueError):
         return value
-    if v in _STRICTNESS_MIGRATION:
-        return _STRICTNESS_MIGRATION[v]
-    return min((0, 50, 100), key=lambda x: abs(x - v))
+    if v in _VALID_STRICTNESS:
+        return v
+    return min(_VALID_STRICTNESS, key=lambda x: abs(x - v))
 
 
 def _normalize_detection(detection: dict) -> dict:
@@ -101,9 +103,10 @@ class ConfigManager:
             return copy.deepcopy(DEFAULT_CONFIG)
         if isinstance(data.get("detection"), dict):
             _normalize_detection(data["detection"])
-            # 识别程度档位迁移：五档(0/25/50/75/100) -> 三档(0/50/100)
+            # 识别程度档位收编：旧五档遗留值（25/75 等）归档到最近三档，
+            # 三档取值（0/50/100）原样保留，不二次迁移用户记忆的设置
             data["detection"]["strictness"] = _migrate_strictness(
-                data["detection"].get("strictness", 0)
+                data["detection"].get("strictness", 50)
             )
         # 远程预警每次启动都默认不开启（enabled 强制置 False），
         # 其余选项保留用户最后一次修改——避免用户忘记关闭导致意外联网推送。

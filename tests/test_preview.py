@@ -7,15 +7,8 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
 
 from ui.preview import PreviewWidget
-
-
-@pytest.fixture(scope="module")
-def app():
-    instance = QApplication.instance()
-    return instance or QApplication([])
 
 
 def _make_image(w: int, h: int) -> QImage:

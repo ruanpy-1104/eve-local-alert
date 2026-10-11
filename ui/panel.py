@@ -117,10 +117,18 @@ class MonitorWorker(QThread):
     window_lost = Signal(str)    # 目标窗口已关闭：监控结束，面板退回未选择状态
     window_minimized = Signal()  # 目标窗口已最小化：提醒玩家恢复窗口
 
-    def __init__(self, config: ConfigManager, root_dir: Path, parent=None):
+    def __init__(
+        self,
+        config: ConfigManager,
+        root_dir: Path,
+        parent=None,
+        target_handle: int | None = None,
+    ):
         super().__init__(parent)
         self._config = config
         self._root = root_dir
+        # 用户点选的目标窗口句柄：只跟踪这个窗口，窗口关闭即结束监控（见 WindowLocator）
+        self._target_handle = target_handle
         self._stop = threading.Event()
         self._paused = threading.Event()  # 播报暂停：命中不报警，达最短时长且目标不在视野后自动恢复
         self._alerting = False  # 当前是否正在播放警报（供 UI 线程只读查询）
@@ -200,6 +208,7 @@ class MonitorWorker(QThread):
         locator = WindowLocator(
             title_keyword=cfg["window"].get("title_keyword"),
             process_name=cfg["window"].get("process_name"),
+            prefer_handle=self._target_handle,
         )
         interval = 1.0 / float(cfg["loop"].get("fps", 12))
         self._last_fps = 1.0 / interval  # 首个周期前的 FPS 占位（供暂停即时刷新）
@@ -338,8 +347,8 @@ class ColorPickerDialog(QDialog):
     """颜色选择：色块勾选警报颜色 + 识别程度（三档滑块）。
 
     布局：标题作为内容区块的纯文字标题（无边框、位于区块外侧上方）；
-    色块放在浅色卡片容器内（卡片本身含边框）；识别程度为一行滑块（无卡片框，
-    仅轨道有颜色，其余与背景一致）。
+    4 个色块等宽平铺在浅色卡片容器内（卡片本身含边框，色块上显示颜色名，勾选时
+    前缀 ✓）；识别程度为一行滑块（无卡片框，仅轨道有颜色，其余与背景一致）。
     """
 
     _CARD_QSS = (
@@ -352,7 +361,7 @@ class ColorPickerDialog(QDialog):
         self.config = config
 
         self.setWindowTitle("颜色选择 · 警报颜色")
-        self.setFixedSize(520, 400)
+        self.setFixedSize(520, 360)
         self._build_ui()
 
     # ---- UI ----
@@ -372,7 +381,7 @@ class ColorPickerDialog(QDialog):
         desc.setWordWrap(True)
         root.addWidget(desc)
 
-        # ---- 警报颜色：标题在卡片外，卡片内仅色块 ----
+        # ---- 警报颜色：标题在卡片外，卡片内为一行等宽色块 ----
         root.addWidget(self._make_section_title("警报颜色"))
         color_group = QFrame()
         color_group.setStyleSheet(self._CARD_QSS)
@@ -382,30 +391,13 @@ class ColorPickerDialog(QDialog):
 
         palette_grid = QGridLayout()
         palette_grid.setHorizontalSpacing(10)
-        palette_grid.setVerticalSpacing(10)
         self._color_buttons: dict[str, QPushButton] = {}
         for i, name in enumerate(COLOR_ORDER):
-            info = EVE_COLORS[name]
-            r, g, b = info["rgb"]
-            luminance = 0.299 * r + 0.587 * g + 0.114 * b
-            text_color = "black" if luminance > 150 else "white"
-            btn = QPushButton("")
-            btn.setCheckable(True)
-            # 用 Expanding + minimumSize 让色块随列宽均匀铺开，避免固定宽挤压重叠
-            btn.setMinimumSize(48, 44)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setToolTip(f"{info['label']}（{name}）")
-            btn.setStyleSheet(
-                f"QPushButton {{ background-color: rgb({r},{g},{b}); color: {text_color};"
-                f" border: 2px solid {theme.BORDER}; border-radius: 6px; font-weight: bold; }}"
-                f"QPushButton:checked {{ border: 3px solid {theme.SUCCESS}; }}"
-            )
-            btn.clicked.connect(lambda _checked, n=name: self._on_color_toggled(n))
-            palette_grid.addWidget(btn, i // 6, i % 6)
+            btn = self._make_swatch(name)
+            # 单行平铺：色块均分卡片宽度（列数与颜色数一致，不靠魔法数列）
+            palette_grid.addWidget(btn, 0, i)
+            palette_grid.setColumnStretch(i, 1)
             self._color_buttons[name] = btn
-        for col in range(len(COLOR_ORDER) // 2):  # 每行 6 列均分宽度
-            palette_grid.setColumnStretch(col, 1)
         color_box.addLayout(palette_grid)
         root.addWidget(color_group)
         self._sync_colors_from_config()
@@ -474,14 +466,40 @@ class ColorPickerDialog(QDialog):
         root.addLayout(btn_row)
 
     # ---- 事件 ----
+    def _make_swatch(self, name: str) -> QPushButton:
+        """构造单个颜色色块：底色为预设色，文字为颜色名，勾选时前缀 ✓。
+
+        文字颜色按底色亮度取黑 / 白，保证任意预设色上都可读；宽度用 Expanding
+        由布局均分，避免固定宽导致挤压重叠。
+        """
+        info = EVE_COLORS[name]
+        r, g, b = info["rgb"]
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        text_color = "black" if luminance > 150 else "white"
+        btn = QPushButton()
+        btn.setCheckable(True)
+        btn.setMinimumSize(96, 52)
+        btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip(f"{info['label']}（{name}）")
+        btn.setStyleSheet(
+            f"QPushButton {{ background-color: rgb({r},{g},{b}); color: {text_color};"
+            f" border: 2px solid {theme.BORDER}; border-radius: 8px;"
+            f" font-size: 14px; font-weight: 600; }}"
+            f"QPushButton:checked {{ border: 3px solid {theme.SUCCESS}; }}"
+        )
+        btn.clicked.connect(lambda _checked, n=name: self._on_color_toggled(n))
+        return btn
+
     def _active_colors(self) -> list[str]:
         """当前勾选的警报颜色。"""
         return [name for name, btn in self._color_buttons.items() if btn.isChecked()]
 
     def _refresh_swatch_marks(self) -> None:
-        """勾选状态以色块上的对勾标记显示（色块不显示颜色名称）。"""
+        """勾选状态以「✓ + 颜色名」显示，未勾选只显示颜色名。"""
         for name, btn in self._color_buttons.items():
-            btn.setText("✓" if btn.isChecked() else "")
+            label = EVE_COLORS[name]["label"]
+            btn.setText(f"✓ {label}" if btn.isChecked() else label)
 
     def _sync_colors_from_config(self) -> None:
         """按配置初始化颜色勾选状态。"""
@@ -511,14 +529,23 @@ class ColorPickerDialog(QDialog):
         self._refresh_swatch_marks()
 
     def _apply(self) -> None:
+        colors = self._active_colors()
+        if not colors:
+            # 至少勾选一种颜色：全不勾会让检测掩码恒为空、警报永不触发
+            self._flash_apply_status("请至少勾选一种颜色", theme.WARN)
+            return
         det = dict(self.config.data["detection"])
-        det["colors"] = self._active_colors()
+        det["colors"] = colors
         det["strictness"] = self.strictness_slider.value()
         self.config.update("detection", det)
         # 底部左侧短暂显示绿色「已应用」反馈（1.5 秒后自动清除）
-        self.apply_status.setText("已应用")
-        self.apply_status.setStyleSheet(f"color:{theme.SUCCESS};font-weight:600;")
-        QTimer.singleShot(1500, self._clear_apply_status)
+        self._flash_apply_status("已应用", theme.SUCCESS, 1500)
+
+    def _flash_apply_status(self, text: str, color: str, delay_ms: int = 2200) -> None:
+        """底部左侧短暂显示应用反馈（颜色区分成功 / 需要修正）。"""
+        self.apply_status.setText(text)
+        self.apply_status.setStyleSheet(f"color:{color};font-weight:600;")
+        QTimer.singleShot(delay_ms, self._clear_apply_status)
 
     def _clear_apply_status(self) -> None:
         self.apply_status.clear()
@@ -780,16 +807,20 @@ class PreviewDialog(QDialog):
     供用户单独查看识别效果（不占用主面板预览）。
     """
 
-    def __init__(self, config: ConfigManager, root_dir: Path, parent=None):
+    def __init__(
+        self,
+        config: ConfigManager,
+        root_dir: Path,
+        parent=None,
+        target_handle: int | None = None,
+    ):
         super().__init__(parent)
         self.config = config
         self._root = root_dir
         self._capture = Capture()
         self._capture_closed = False  # closeEvent 后置位，下次打开时重建捕获实例
-        self._locator = WindowLocator(
-            title_keyword=config.data["window"].get("title_keyword"),
-            process_name=config.data["window"].get("process_name"),
-        )
+        self._target_handle = target_handle
+        self._locator = self._make_locator()
         self._detector = Detector(**config.data["detection"])
         self._det_cfg_key: str | None = None
         self._win_cfg_key: str | None = None
@@ -806,6 +837,19 @@ class PreviewDialog(QDialog):
         self._timer = QTimer(self)
         self._timer.setInterval(167)  # ~6 FPS 预览（低帧率优化性能）
         self._timer.timeout.connect(self._tick)
+
+    def _make_locator(self) -> WindowLocator:
+        """按当前配置 + 目标句柄构造定位器（与主面板保持同一套定位语义）。"""
+        return WindowLocator(
+            title_keyword=self.config.data["window"].get("title_keyword"),
+            process_name=self.config.data["window"].get("process_name"),
+            prefer_handle=self._target_handle,
+        )
+
+    def set_target_handle(self, handle: int | None) -> None:
+        """目标程序变化时更新跟踪句柄，并强制下一帧重新定位。"""
+        self._target_handle = handle
+        self._win = None
 
     # ---- UI ----
     def _build_ui(self) -> None:
@@ -831,56 +875,80 @@ class PreviewDialog(QDialog):
 
     # ---- 事件 ----
     def _tick(self) -> None:
-        try:
-            # 检测参数变化（颜色 / 识别程度）时重建检测器，保持与配置一致
-            key = repr(sorted(self.config.data["detection"].items()))
-            if key != self._det_cfg_key:
-                self._detector = Detector(**self.config.data["detection"])
-                self._det_cfg_key = key
+        """定时刷新：定位窗口 -> 读取尺寸 -> 捕获 ROI -> 检测 -> 叠加显示。"""
+        self._tick_count += 1
+        # 检测参数变化（颜色 / 识别程度）时重建检测器，保持与配置一致
+        key = repr(sorted(self.config.data["detection"].items()))
+        if key != self._det_cfg_key:
+            self._detector = Detector(**self.config.data["detection"])
+            self._det_cfg_key = key
 
+        win = self._resolve_window()
+        if win is None:
+            return
+        # 句柄可能在两次调用之间失效：win32 抛的是 pywintypes.error（非 RuntimeError），
+        # 必须在此收敛，否则异常逃出 Qt 槽会被记成「未捕获异常（闪退）」。
+        try:
+            minimized = is_minimized(win.handle)
+            cw, ch = client_size(win.handle)
+        except Exception:
+            logger.warning("预览：读取目标窗口状态失败，重新定位", exc_info=True)
+            self._win = None
+            self.status_label.setText("目标程序窗口不可用，正在重新定位")
+            return
+
+        if minimized:
+            self.preview.clear()
+            self.preview.set_placeholder("目标窗口已最小化，请恢复窗口")
+            return
+
+        roi = ROI(**self.config.data["roi"])
+        region = roi.to_capture_region(0, 0, cw, ch)
+        frame = self._capture.grab_window(win.handle, region)
+        if frame is None or frame.size == 0:
+            return
+
+        hit = self._detector.detect(frame)
+        vis = frame.copy()
+        for x, y, w, h in self._detector.last_boxes:
+            cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        self.preview.set_image(bgr_to_qimage(vis))
+
+        self._frames += 1
+        now = time.perf_counter()
+        if now - self._last_status >= 0.5:
+            fps = self._frames / max(now - self._last_status, 1e-6)
+            self._frames = 0
+            self._last_status = now
+            state = "检测到目标颜色" if hit else "未检测到目标"
+            self.status_label.setText(f"识别：{state} | {fps:.1f} FPS")
+
+    def _resolve_window(self) -> WindowInfo | None:
+        """返回当前可用的目标窗口；窗口关闭 / 句柄失效时丢弃缓存并返回 None。
+
+        「预览」是可选功能，这里把定位与句柄失效的全部异常收敛在窗口解析阶段，
+        不牵连后面的捕获 / 检测代码（那些异常应正常暴露）。
+        """
+        try:
             # 目标程序变化（重新选择程序）时重建定位器，保持与配置一致
             win_key = repr(sorted(self.config.data["window"].items()))
             if win_key != self._win_cfg_key:
                 self._win_cfg_key = win_key
-                self._locator = WindowLocator(
-                    title_keyword=self.config.data["window"].get("title_keyword"),
-                    process_name=self.config.data["window"].get("process_name"),
-                )
-                self._win = None  # 强制下一帧重新定位到新程序
-
+                self._locator = self._make_locator()
+                self._win = None  # 强制重新定位到新程序
             if self._win is None or self._tick_count % REFRESH_GEOMETRY_EVERY == 0:
                 self._win = self._locator.find()
-            self._tick_count += 1
-
-            if is_minimized(self._win.handle):
-                self.preview.clear()
-                self.preview.set_placeholder("目标窗口已最小化，请恢复窗口")
-                return
-
-            cw, ch = client_size(self._win.handle)
-            roi = ROI(**self.config.data["roi"])
-            region = roi.to_capture_region(0, 0, cw, ch)
-            frame = self._capture.grab_window(self._win.handle, region)
-            if frame is None or frame.size == 0:
-                return
-
-            hit = self._detector.detect(frame)
-            vis = frame.copy()
-            for x, y, w, h in self._detector.last_boxes:
-                cv2.rectangle(vis, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            self.preview.set_image(bgr_to_qimage(vis))
-
-            self._frames += 1
-            now = time.perf_counter()
-            if now - self._last_status >= 0.5:
-                fps = self._frames / max(now - self._last_status, 1e-6)
-                self._frames = 0
-                self._last_status = now
-                state = "检测到目标颜色" if hit else "未检测到目标"
-                self.status_label.setText(f"识别：{state} | {fps:.1f} FPS")
+            return self._win
         except RuntimeError:
             self._win = None  # 窗口可能已关闭，下一帧重新定位
             self.status_label.setText("无法定位目标程序窗口")
+            return None
+        except Exception:
+            if self._win is not None:
+                logger.warning("预览：目标窗口不可用，重新定位", exc_info=True)
+                self._win = None
+            self.status_label.setText("目标程序窗口不可用，正在重新定位")
+            return None
 
     def show(self) -> None:
         """打开时恢复上次关闭前的大小与位置（重新选择程序后由 reset_geometry 清除）。"""
@@ -935,6 +1003,8 @@ class ControlPanel(QWidget):
         self._sel_frame: np.ndarray | None = None
         self._sel_done = False
         self._sel_roi: ROI | None = None
+        # 目标窗口句柄（用户点选的那个窗口）：只跟踪它，关闭即判定目标已关闭
+        self._target_handle: int | None = None
         # 「预览」可用状态：需已选择目标
         self._has_target = False
 
@@ -951,6 +1021,7 @@ class ControlPanel(QWidget):
         self.resize(600, 520)
         self._build_ui()
         self._update_preview_button()
+        self._update_remote_button()
 
     def _app_icon(self) -> QIcon:
         # 窗口 / 任务栏图标用多分辨率 ICO（16–256px），比 PNG 在 Windows 上更稳
@@ -1086,9 +1157,20 @@ class ControlPanel(QWidget):
         return WindowLocator(
             title_keyword=cfg["window"].get("title_keyword"),
             process_name=cfg["window"].get("process_name"),
+            prefer_handle=self._target_handle,
         )
 
-    def _select_target(self) -> None:
+    def _bind_target(self, win: WindowInfo) -> None:
+        """记住目标窗口句柄：之后只跟踪这个窗口，避免同进程的其它窗口被当成目标。"""
+        self._target_handle = win.handle
+        if self._preview_dialog is not None:
+            self._preview_dialog.set_target_handle(win.handle)
+
+    def _select_target(self, cancelled_message: str = "") -> None:
+        """选择目标程序；选择完成后自动进入框选。
+
+        :param cancelled_message: 用户取消选择时的提示文案（默认通用文案）。
+        """
         prefer = None
         try:
             prefer = self._make_locator().find().handle
@@ -1096,7 +1178,9 @@ class ControlPanel(QWidget):
             pass
         dialog = TargetPickerDialog(self, prefer_handle=prefer)
         if dialog.exec() != QDialog.Accepted or dialog.picked is None:
-            self.status_label.setText("未选择程序，可稍后点击「选择程序」")
+            self.status_label.setText(
+                cancelled_message or "未选择程序，可稍后点击「选择程序」"
+            )
             return
         win = self._on_target_selected(dialog.picked)
         if win is not None:
@@ -1104,11 +1188,15 @@ class ControlPanel(QWidget):
 
     def _on_target_selected(self, win: WindowInfo) -> WindowInfo | None:
         """保存目标选择并返回重新定位的最新窗口；失败返回 None。"""
-        # 保存选择：进程名 + 窗口标题，供后续定位与监控使用
-        update: dict = {"title_keyword": win.title}
-        if win.process_name:
-            update["process_name"] = win.process_name
-        self.config.update("window", update)
+        # 保存选择：标题关键字 + 进程名，供后续定位与监控使用。进程名取不到时
+        # （高权限进程 psutil 会失败）必须显式写成空串：否则旧进程名残留，而
+        # WindowLocator 优先按进程名匹配，会锁回上一个目标窗口。
+        self.config.update(
+            "window",
+            {"title_keyword": win.title, "process_name": win.process_name or ""},
+        )
+        # 记录用户点选的窗口句柄：后续只跟踪这个窗口（同名 / 同进程的其它窗口不会被误认）
+        self._target_handle = win.handle
         # 重新选择程序后，预览窗口恢复默认大小与位置
         if self._preview_dialog is not None:
             self._preview_dialog.reset_geometry()
@@ -1118,28 +1206,43 @@ class ControlPanel(QWidget):
         except RuntimeError:
             self.status_label.setText("目标程序窗口已关闭，请重新选择")
             return None
-        cw, ch = client_size(win.handle)
+        self._bind_target(win)
+        try:
+            cw, ch = client_size(win.handle)
+        except Exception:
+            # 极窄的竞态：刚定位到窗口就被关闭。win32 抛的是 pywintypes.error
+            logger.warning("目标窗口在定位后立即失效", exc_info=True)
+            self.status_label.setText("目标程序窗口已关闭，请重新选择")
+            return None
         self._set_program_aspect(cw, ch)
         self._has_target = True
         self._update_preview_button()
-        self.status_label.setText(f"已选择目标：{win.title}，请在预览画面中框选监控区域")
+        self.status_label.setText(
+            f"已选择目标：{win.title}，请在预览画面中框选监控区域，框选完成后点「开始预警」"
+        )
         return win
 
     def _ensure_target(self) -> WindowInfo | None:
         """确保有匹配的目标窗口；没有则引导用户选择，返回 None 表示放弃。"""
         try:
-            return self._make_locator().find()
+            win = self._make_locator().find()
         except RuntimeError:
             dialog = TargetPickerDialog(self)
             if dialog.exec() != QDialog.Accepted or dialog.picked is None:
                 return None
             return self._on_target_selected(dialog.picked)
+        self._bind_target(win)
+        return win
 
     # ---- 预览内框选区域 ----
     def _start_selection(self) -> None:
         """进入框选模式：预览显示目标窗口全画面，拖拽框选监控区域。"""
-        if self._worker is not None and self._worker.isRunning():
+        if self._worker_running():
             self._stop_monitor()  # 避免监控预览覆盖框选画面
+        if self._worker_running():
+            # 线程未在超时内退出（采集卡住）：本轮不进入框选，避免两路画面互相覆盖
+            self.status_label.setText("正在停止上一轮监控，请稍候再试")
+            return
         win = self._ensure_target()
         if win is None:
             return
@@ -1152,7 +1255,7 @@ class ControlPanel(QWidget):
         self._sel_timer.start()
         self.preview.enable_selection(True)
         self.preview.setFocus()
-        self.status_label.setText("在预览画面中拖动鼠标框选监控区域")
+        self.status_label.setText("在预览画面中拖动鼠标框选监控区域，完成后点「开始预警」")
         self._sel_tick()
 
     def _sel_tick(self) -> None:
@@ -1164,12 +1267,19 @@ class ControlPanel(QWidget):
         except RuntimeError:
             self._end_selection("目标程序窗口已关闭")
             return
+        try:
+            minimized = is_minimized(self._sel_target.handle)
+            cw, ch = client_size(self._sel_target.handle)
+        except Exception:
+            # 句柄在定位与读取之间失效（win32 抛 pywintypes.error）
+            logger.warning("目标窗口在框选刷新期间失效", exc_info=True)
+            self._end_selection("目标程序窗口已关闭")
+            return
         # 窗口最小化时无法捕获内容：显示占位提示，恢复后自动继续框选预览
-        if is_minimized(self._sel_target.handle):
+        if minimized:
             self.preview.clear()
             self.preview.set_placeholder("目标窗口已最小化，请恢复窗口")
             return
-        cw, ch = client_size(self._sel_target.handle)
         self._set_program_aspect(cw, ch)
         region = {"left": 0, "top": 0, "width": cw, "height": ch}
         frame = self._sel_capture.grab_window(self._sel_target.handle, region)
@@ -1208,10 +1318,15 @@ class ControlPanel(QWidget):
         self._sel_roi = roi
         self.status_label.setText(
             f"监控区域已保存: ({roi.x:.2f}, {roi.y:.2f}, {roi.width:.2f}, {roi.height:.2f})"
+            "，点「开始预警」开始监控"
         )
 
     def _end_selection(self, message: str = "") -> None:
-        """结束框选会话，释放捕获资源并清除残留选区。"""
+        """结束框选会话，释放捕获资源并清除残留选区。
+
+        ``message`` 非空表示目标窗口已失效（异常结束）：除提示外还要清掉过期画面，
+        并把面板退回「未选择目标」状态——否则下一步「开始预警」会拿着失效句柄再试。
+        """
         if self._sel_timer is not None:
             self._sel_timer.stop()
             self._sel_timer = None
@@ -1225,25 +1340,63 @@ class ControlPanel(QWidget):
         self.preview.enable_selection(False)
         self.preview.set_selection(None)  # 清除残留选区叠加层，避免污染监控预览
         if message:
+            # 异常结束（如目标窗口关闭）：清掉最后一帧画面，避免停在一张过期 / 黑屏画面上
+            self.preview.clear()
+            self.preview.set_placeholder("实时预览：选择目标程序后自动进入框选模式")
+            self._has_target = False
+            self._update_preview_button()
             self.status_label.setText(message)
 
     # ---- 监控 ----
+    def _worker_running(self) -> bool:
+        """监控线程是否仍在运行（含「已请求停止但尚未退出」的收尾阶段）。"""
+        return self._worker is not None and self._worker.isRunning()
+
     def _toggle_monitor(self) -> None:
-        if self._worker is not None and self._worker.isRunning():
+        if self._worker_running():
             self._stop_monitor()
             self._start_selection()  # 退出监控后自动进入框选模式
         else:
             self._start_monitor()
 
     def _start_monitor(self) -> None:
-        self._end_selection()  # 先结束框选会话，避免预览冲突
-        win = self._ensure_target()
-        if win is None:
+        """开始监控。
+
+        未选择目标程序时，本次点击**等价于「选择程序」**：弹出选择框、选完进入框选，
+        用户框好监控区域后再点一次「开始预警」才真正开始——避免「点开始预警 →
+        弹窗选程序 → 选完立刻开跑」导致用户来不及框选区域。
+        """
+        # 上一轮线程可能仍在退出（采集卡住时 wait 会超时）：此时不新建，避免两个
+        # 工作线程同时抓屏、同时写预览与状态栏
+        if self._worker_running():
+            self.status_label.setText("正在停止上一轮监控，请稍候再试")
             return
-        cw, ch = client_size(win.handle)
+        if not self._has_target:
+            self._select_target(
+                "未选择目标程序，预警未开始：请选择窗口并在预览中框选监控区域，再点「开始预警」"
+            )
+            return
+        self._end_selection()  # 先结束框选会话，避免预览冲突
+        try:
+            win = self._make_locator().find()
+        except RuntimeError:
+            # 目标窗口已关闭（句柄失效）：同样退回「选择程序」流程，由用户重新选择
+            self._select_target(
+                "目标程序窗口已关闭，预警未开始：请重新选择窗口并框选监控区域，再点「开始预警」"
+            )
+            return
+        self._bind_target(win)
+        try:
+            cw, ch = client_size(win.handle)
+        except Exception:
+            logger.warning("目标窗口在启动监控前失效", exc_info=True)
+            self.status_label.setText("目标程序窗口已关闭，请重新选择")
+            return
         self._set_program_aspect(cw, ch)
         # 通过窗口内容捕获（PrintWindow）监控所选窗口，不改变窗口 Z 序 / 前台状态。
-        self._worker = MonitorWorker(self.config, self._root, self)
+        self._worker = MonitorWorker(
+            self.config, self._root, self, target_handle=self._target_handle
+        )
         self._worker.preview.connect(self._on_preview)
         self._worker.status.connect(self.status_label.setText)
         self._worker.error.connect(self._on_error)
@@ -1261,10 +1414,16 @@ class ControlPanel(QWidget):
         self.status_label.setText("正在定位窗口...")
 
     def _stop_monitor(self) -> None:
-        if self._worker is not None:
-            self._worker.stop()
-            self._worker.wait(2000)
-            self._worker = None
+        """停止监控线程并复位按钮；线程未在超时内退出时保留引用等待其自行结束。"""
+        worker = self._worker
+        if worker is not None:
+            worker.stop()
+            if worker.wait(2000):
+                self._worker = None
+            else:
+                # 采集被卡住（如 PrintWindow 阻塞）时线程仍在收尾：保留引用，由
+                # _worker_running() 阻止新一轮监控 / 框选抢跑，避免双线程同抓屏。
+                logger.warning("监控线程未在 2 秒内退出，保留引用等待其自行结束")
         self.start_btn.setText("开始预警")
         self.pause_btn.setEnabled(False)
         self.status_label.setText("已停止预警")
@@ -1296,6 +1455,8 @@ class ControlPanel(QWidget):
         self.pause_btn.setEnabled(False)
         self._has_target = False
         self._update_preview_button()
+        # 保留 _target_handle：下次「开始预警」会因句柄失效直接引导重选，
+        # 而不是按进程名 / 标题悄悄锁到别的窗口
 
     def _on_window_minimized(self) -> None:
         """目标窗口最小化：播放提示音并置顶面板提醒玩家（不抢键盘焦点，不提示窗口关闭）。"""
@@ -1308,7 +1469,7 @@ class ControlPanel(QWidget):
     # ---- 播报暂停 ----
     def _on_pause_toggled(self, checked: bool) -> None:
         """用户点击「暂停预警」：即使命中也不报警，达最短时长且目标不在视野后自动恢复。"""
-        if self._worker is None or not self._worker.isRunning():
+        if not self._worker_running():
             # 未监控时忽略（按钮已禁用，双保险）
             self.pause_btn.blockSignals(True)
             self.pause_btn.setChecked(False)
@@ -1322,7 +1483,7 @@ class ControlPanel(QWidget):
 
     def _on_alert_paused(self, paused: bool) -> None:
         """工作线程同步暂停状态（自动恢复播报时取消按钮勾选）。"""
-        if self._worker is None or not self._worker.isRunning():
+        if not self._worker_running():
             return
         self.pause_btn.blockSignals(True)
         self.pause_btn.setChecked(paused)
@@ -1345,6 +1506,29 @@ class ControlPanel(QWidget):
         """打开远程预警设置：Server酱 微信推送（默认关闭，首次使用有引导）。"""
         dialog = RemoteAlertDialog(self.config, self)
         dialog.exec()
+        self._update_remote_button()  # 应用「启用 / 关闭」后同步按钮样式
+
+    def _update_remote_button(self) -> None:
+        """按远程预警开关同步「远程预警」按钮样式。
+
+        开启时套用与「开始预警」相同的主行动样式（主题蓝底白字加粗）作为状态提示，
+        关闭时恢复普通次要按钮样式。
+
+        动态属性变更后全局 QSS 不会自动重新求值：只 ``setProperty`` 的话按钮外观不变
+        （实测仍为 0 个主色像素）。刷新若在 Python 侧调用 ``style().unpolish/polish``，
+        实测会在 Qt 测试会话里触发非确定性崩溃，故改用「按状态切换控件级样式表」——
+        Qt 在 ``setStyleSheet`` 内部完成重新 polish，真实平台连续切换已验证稳定。
+        """
+        enabled = bool((self.config.data.get("remote_alert") or {}).get("enabled"))
+        # 顺序要紧：先改动态属性，再重设控件样式表——setStyleSheet 内部会重新 polish，
+        # 此刻读到的是新属性值；反过来会让关闭时仍按旧的 role=primary 重新求值。
+        self.remote_btn.setProperty("role", theme.ROLE_PRIMARY if enabled else "")
+        self.remote_btn.setStyleSheet(theme.primary_button_qss() if enabled else "")
+        self.remote_btn.setToolTip(
+            "远程预警已开启：警报触发时通过 Server酱 向你的微信推送提醒"
+            if enabled
+            else "开启后，警报触发时通过 Server酱 向你的微信推送提醒（默认关闭）"
+        )
 
     def _update_preview_button(self) -> None:
         """「预览」仅在已选择目标时可点击。"""
@@ -1353,7 +1537,11 @@ class ControlPanel(QWidget):
     def _open_preview(self) -> None:
         """打开独立预览窗口：显示框选监控区域画面与识别信息。"""
         if self._preview_dialog is None:
-            self._preview_dialog = PreviewDialog(self.config, self._root, self)
+            self._preview_dialog = PreviewDialog(
+                self.config, self._root, self, target_handle=self._target_handle
+            )
+        else:
+            self._preview_dialog.set_target_handle(self._target_handle)
         self._preview_dialog.show()
         self._preview_dialog.raise_()
         self._preview_dialog.activateWindow()
@@ -1364,11 +1552,7 @@ class ControlPanel(QWidget):
 
     def _test_alert(self) -> None:
         """测试声音：播放一个完整周期后停止。"""
-        if (
-            self._worker is not None
-            and self._worker.isRunning()
-            and self._worker.is_alerting()
-        ):
+        if self._worker_running() and self._worker.is_alerting():
             # 监控警报正在播放：PlaySound(SND_PURGE) 按进程停止所有声音，
             # 会误杀监控警报且其 _alerting 状态不会自动恢复，故此时禁止测试。
             self.status_label.setText("监控警报正在播放，请先「暂停预警」再测试")
@@ -1389,7 +1573,7 @@ class ControlPanel(QWidget):
         self._end_selection()
         if self._preview_dialog is not None:
             self._preview_dialog.close()
-        if self._worker is not None and self._worker.isRunning():
+        if self._worker_running():
             self._worker.stop()
             self._worker.wait(2000)
         super().closeEvent(event)

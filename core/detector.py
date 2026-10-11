@@ -24,7 +24,12 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from core.colors import DEFAULT_ALERT_COLORS, DEFAULT_STRICTNESS, color_ranges
+from core.colors import (
+    DEFAULT_ALERT_COLORS,
+    DEFAULT_STRICTNESS,
+    color_ranges,
+    is_achromatic,
+)
 
 
 class Detector:
@@ -42,7 +47,7 @@ class Detector:
         max_aspect: float = 1.6,
         min_fill: float = 0.70,
         achromatic_fill: float = 0.82,
-        gray_v_max: float = 155.0,
+        gray_v_max: float = 200.0,
         need_name: bool = True,
         name_v: int = 90,
     ):
@@ -62,8 +67,9 @@ class Detector:
         # 彩色用常规填充率；灰白掩码会被名字文字污染，故用更高填充率剔除文字。
         self.min_fill = min_fill
         self.achromatic_fill = achromatic_fill
-        # 灰白还要求目标整体是「灰」而非「白」（平均明度上限）：白色名字文字 / 图标里的
-        # 白色高光平均 V 很高（约 180+），而中立灰图标平均 V 偏低（约 129），据此剔除白色。
+        # 灰白还要求目标整体是「灰」而非「白」（平均明度上限）：白名字文字与图标里的
+        # 纯白高光平均 V 接近 255，中立灰图标实测 V≈107–138、调色板灰白色 V≈178，
+        # 故上限取 200——既覆盖调色板自身的灰白，又仍能剔除近纯白（V>200）的色块。
         self.gray_v_max = gray_v_max
         # need_name：优先以「图标右侧对齐的明亮名字文字」剔除背景干扰；
         # 但当整帧都没有名字（纯图标 ROI）时自动退化为仅凭几何判定，保证无名字也能识别。
@@ -219,12 +225,12 @@ class Detector:
 
         名字文字是白色/灰白，会进入「灰白」掩码（彩色掩码不含白色文字）；而彩色图标
         下采样后填充率降至 0.7–0.8。因此：
-        - 彩色（含黑）用常规填充率 `min_fill`，避免下采样后漏掉图标；
+        - 彩色用常规填充率 `min_fill`，避免下采样后漏掉图标；
         - 灰白用更高填充率 `achromatic_fill` 检测，碎笔画般的名字文字被填充率剔除。
         两组掩码按颜色互斥（彩色 S 高、灰白 S 低），检测结果不相交，直接拼接。
         """
-        gray = tuple(c for c in self.colors if c == "gray_white")
-        colored = tuple(c for c in self.colors if c != "gray_white")
+        gray = tuple(c for c in self.colors if is_achromatic(c))
+        colored = tuple(c for c in self.colors if not is_achromatic(c))
         boxes: list[tuple[int, int, int, int]] = []
         if colored:
             m, v = self._mask_for(frame_bgr, colored)

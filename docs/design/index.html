@@ -40,7 +40,7 @@
 
     <section class="doc-block" id="overview">
       <h2>项目定位与设计原则</h2>
-      <p>在《EVE Online》中，敌对玩家在总览（Overview）与太空视野中以特定颜色名称标识（默认红 / 橙红 / 橙色）。本工具的目标是充当一台<strong>“只读屏幕阅读器”</strong>：它只读取操作系统已经渲染到屏幕上的像素，对指定游戏窗口画面做实时捕获，在玩家自定义的监控区域内按所选颜色检测目标，一旦命中立即播放本地警报音。</p>
+      <p>在《EVE Online》中，敌对玩家在总览（Overview）与太空视野中以特定颜色名称标识（默认红 / 橙 / 黄，中立为灰白）。本工具的目标是充当一台<strong>“只读屏幕阅读器”</strong>：它只读取操作系统已经渲染到屏幕上的像素，对指定游戏窗口画面做实时捕获，在玩家自定义的监控区域内按所选颜色检测目标，一旦命中立即播放本地警报音。</p>
       <p>整个方案被四条不可妥协的设计红线约束，它们决定了后续所有技术选型：</p>
       <ul>
         <li><strong>只读截屏：</strong>仅通过操作系统图形接口读取屏幕像素，与 OBS、截图软件同属一类读操作，不触碰游戏进程内存。</li>
@@ -53,6 +53,7 @@
       </div>
       <div class="doc-note">
         <p><strong>文档说明：</strong>本文档版本 v1.0，成稿日期 2026-08-30，适用于 Windows 10 / 11 平台。文档给出技术栈、模块划分、核心算法、性能预算与工程目录，供开发者作为实现与迭代的基线。</p>
+        <p><strong>最近更新（v1.1.8，2026-10-11）：</strong>警报颜色精简为红 / 橙 / 黄 / 灰白 4 色（色相窗口按相邻预设中点固定划分，互不重叠），识别程度只调节饱和度 / 明度门槛；窗口定位改为跟踪用户点选的窗口句柄（关闭即判定目标已关闭）；远程预警开启后按钮套用主行动样式。</p>
       </div>
     </section>
 
@@ -73,7 +74,7 @@
           <tbody>
             <tr><td>FR-1</td><td>游戏窗口实时捕获</td><td>精准定位并获取指定的 EVE 端游窗口画面，支持窗口化、无边框全屏等常见模式。</td></tr>
             <tr><td>FR-2</td><td>自定义区域选择</td><td>玩家通过鼠标框选游戏界面中的特定区域作为监控 ROI，坐标以归一化方式保存。</td></tr>
-            <tr><td>FR-3</td><td>目标识别</td><td>在自定义区域内按所选颜色准确识别出现的敌对目标（默认红 / 橙红 / 橙 / 灰白）。</td></tr>
+            <tr><td>FR-3</td><td>目标识别</td><td>在自定义区域内按所选颜色准确识别出现的敌对目标（可选红 / 橙 / 黄 / 灰白，默认全选）。</td></tr>
             <tr><td>FR-4</td><td>警报触发</td><td>检测到目标时立即持续循环播放预设警报音，目标消失即停止（无冷却）。</td></tr>
             <tr><td>FR-5</td><td>完全本地化</td><td>不包含任何网络请求或数据上传功能，全程离线运行。</td></tr>
             <tr><td>FR-6</td><td>反作弊安全</td><td>不修改内存、不注入、不 Hook，仅做只读屏幕捕获。</td></tr>
@@ -214,7 +215,8 @@ flowchart TD
 
     <section class="doc-diagram" id="detection">
       <h2>核心算法：目标识别</h2>
-      <p>目标识别的核心是颜色分割。EVE 总览中，每个玩家名字<strong>前方</strong>都有一个实心小图标（近正方形，尺寸随名字字体大小可调），图标颜色可在总览设置中更改为 12 种预设之一（对应“警报颜色”）；而名字文字本身始终是白色 / 灰白，不随阵营变化。因此本方案按<strong>“图标”</strong>而非“文字条形”检测，且判定<strong>不以固定像素为准</strong>。整条流水线如下。</p>
+      <p>目标识别的核心是颜色分割。EVE 总览中，每个玩家名字<strong>前方</strong>都有一个实心小图标（近正方形，尺寸随名字字体大小可调），图标颜色可在总览设置中更改为预设色之一（对应“警报颜色”）；而名字文字本身始终是白色 / 灰白，不随阵营变化。因此本方案按<strong>“图标”</strong>而非“文字条形”检测，且判定<strong>不以固定像素为准</strong>。整条流水线如下。</p>
+      <p>本工具只保留 4 种总览预设色：<strong>红 (191,0,0) / 橙 (255,89,0) / 黄 (255,178,0) / 灰白 (178,178,178)</strong>（取值即调色板实测采样）。移除其余 8 色的原因：紫与品红在 HSV 上几乎重合（中心色相同为 138，勾一个等于勾两个）、黑在深色总览背景上无法与背景分离（掩码会与背景连成一块，实测永不命中），其余冷色与“红名预警”场景无关，列出只会让颜色选择变成多选题海。</p>
       <div class="diagram-frame table-scroll mermaid-frame">
         <pre class="mermaid">
 flowchart LR
@@ -231,7 +233,7 @@ flowchart LR
       <p class="figure-caption"><strong>图 2：目标识别流水线。</strong><span>下采样与 ROI 裁剪把计算量降到最小；时序确认用时间维度消除闪烁误报。</span></p>
 
       <h3>颜色阈值初值</h3>
-      <p>每种颜色以“中心色相 + 识别严格度”描述，识别程度滑块（宽松 ~ 严格）按比例线性插值：宽松时色相带宽更大、饱和度 / 明度下限更低；严格时带宽收窄、下限抬高。以下为 OpenCV HSV 空间（H∈[0,179]、S∈[0,255]、V∈[0,255]）的两端初值。</p>
+      <p>色相窗口按<strong>相邻预设的中点固定划分</strong>（互不重叠），识别程度滑块（宽松 ~ 严格）只线性插值<strong>饱和度 / 明度下限</strong>：宽松时下限更低（更易命中）；严格时下限抬高（更苛刻、误报更少）。以下为 OpenCV HSV 空间（H∈[0,179]、S∈[0,255]、V∈[0,255]）的两端初值。</p>
       <div class="table-scroll">
         <table class="doc-data-table">
           <thead>
@@ -244,15 +246,14 @@ flowchart LR
             </tr>
           </thead>
           <tbody>
-            <tr><td>彩色（10 色）</td><td>色相半宽</td><td class="num">±14</td><td class="num">±4</td><td>围绕各色中心色相；严格时收窄，避免相邻色彩串扰</td></tr>
-            <tr><td>彩色（10 色）</td><td>饱和度下限</td><td class="num">70</td><td class="num">140</td><td>越高越排除粉白灰</td></tr>
-            <tr><td>彩色（10 色）</td><td>明度下限</td><td class="num">40</td><td class="num">75</td><td>越高越排除暗部</td></tr>
+            <tr><td>红 / 橙 / 黄</td><td>色相窗口</td><td class="num">固定</td><td class="num">固定</td><td>按相邻预设中点划分，<strong>不随识别程度变化</strong>：红 0–5 ∪ 175–179、橙 6–15、黄 16–26</td></tr>
+            <tr><td>红 / 橙 / 黄</td><td>饱和度下限</td><td class="num">70</td><td class="num">140</td><td>越高越排除粉白灰</td></tr>
+            <tr><td>红 / 橙 / 黄</td><td>明度下限</td><td class="num">40</td><td class="num">75</td><td>越高越排除暗部</td></tr>
             <tr><td>灰白</td><td>明度下限</td><td class="num">88</td><td class="num">100</td><td>无色相；下探以捕获较暗的中立图标，白色名字文字靠填充率剔除</td></tr>
-            <tr><td>黑色</td><td>明度上限</td><td class="num">100</td><td class="num">55</td><td>无色相，只认更暗的黑色</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="figure-caption"><strong>表 6：HSV 颜色阈值两端初值。</strong><span>各启用的颜色区间掩码做按位或合并，再进入形态学处理。</span></p>
+      <p class="figure-caption"><strong>表 6：HSV 颜色阈值两端初值。</strong><span>三色暖色在色相环上只相距 10~11（红 0 / 橙 10 / 黄 21），若沿用“中心色相 ± 半带宽”必然互相重叠（勾“橙”会同时命中“黄”），故改为按中点切分；总览红图标实测 H≈1.5–3.4，收窄色相窗口会在严格档造成漏报。“松 / 严”的实际调节价值在饱和度 / 明度门槛。各启用颜色的区间掩码做按位或合并，再进入形态学处理。</span></p>
 
       <h3>误报与漏报抑制</h3>
       <ul>
@@ -332,8 +333,9 @@ flowchart LR
       <p>项目按“核心逻辑 / 界面 / 资源 / 测试 / 文档”分层，入口仅做装配，便于单测与后续替换（如将 PySide6 换成 Tkinter 只改 ui 层）。</p>
       <pre class="codeblock"><code>├── main.py                 # 程序入口（UI 控制面板 / --cli 无 UI 闭环）
 ├── config.example.json     # 配置模板（运行时 config.json 不入库，缺失时自动用默认值）
-├── requirements.txt        # 依赖清单
-├── requirements-dev.txt    # 开发依赖（pytest）
+├── pyproject.toml          # 依赖声明（uv 推荐）+ uv.lock 版本锁定
+├── requirements.txt        # 依赖清单（venv + pip 备选）
+├── requirements-dev.txt    # 开发依赖（含 pytest）
 ├── pytest.ini              # pytest 配置
 ├── CHANGELOG.md            # 更新日志
 ├── core/
@@ -341,7 +343,7 @@ flowchart LR
 │   ├── capture.py          # 画面捕获：PrintWindow 窗口内容 + mss 屏幕回退
 │   ├── region_selector.py  # 区域选择：ROI 坐标归一化与换算
 │   ├── detector.py         # 目标识别：多颜色阈值 + 连通域 + 图标几何筛选 + 名字验证 + 时序确认
-│   ├── colors.py           # 12 种 EVE 总览颜色预设与识别程度换算
+│   ├── colors.py           # 4 种 EVE 总览颜色预设与识别程度换算
 │   ├── alerter.py          # 警报：winsound 连续循环播放 / 停止
 │   ├── config.py           # 配置读写：默认值深度合并
 │   ├── paths.py            # 运行时路径：区分开发期与打包后目录
@@ -379,7 +381,7 @@ flowchart LR
           <tbody>
             <tr><td>P0</td><td>窗口定位 + 捕获 + 实时预览</td><td>✅ 完成：PrintWindow 窗口内容捕获，选择目标后自动框选</td></tr>
             <tr><td>P1</td><td>区域选择 + 配置持久化</td><td>✅ 完成：预览内框选，归一化坐标跨分辨率稳定</td></tr>
-            <tr><td>P2</td><td>目标识别 + 颜色选择</td><td>✅ 完成：12 色预设勾选 + 识别程度滑块，替代原校准器</td></tr>
+            <tr><td>P2</td><td>目标识别 + 颜色选择</td><td>✅ 完成：预设色勾选（现为红 / 橙 / 黄 / 灰白 4 色）+ 识别程度滑块，替代原校准器</td></tr>
             <tr><td>P3</td><td>警报触发 + 连续播报</td><td>✅ 完成：识别即循环警报直到目标消失（无冷却）</td></tr>
             <tr><td>P4</td><td>性能优化 + 多分辨率适配 + 打包</td><td>✅ 完成：低功耗运行（默认 6 FPS）、面板自由缩放、最小化优雅降级</td></tr>
           </tbody>
@@ -391,7 +393,7 @@ flowchart LR
     <section class="doc-block" id="risks">
       <h2>风险与边界</h2>
       <ul>
-        <li><strong>颜色阈值漂移：</strong>不同显卡驱动色调、游戏 UI 皮肤、夜间模式滤镜会改变颜色表现，可通过“颜色选择 + 识别程度滑块”在宽松 / 严格之间调节。</li>
+        <li><strong>颜色阈值漂移：</strong>不同显卡驱动色调、游戏 UI 皮肤、夜间模式滤镜会改变颜色表现，可通过“颜色选择 + 识别程度滑块”在宽松 / 严格之间调节。色相窗口按 4 色预设的中点固定划分，可覆盖实测的图标色相（红 H≈1.5–3.4、橙 H≈10–16）；若某套驱动 / 滤镜把图标色相整体推过窗口边界（例如红偏到橙），则该图标会落到相邻预设的颜色下，需要用“颜色选择”一并勾选相邻色来兜住。</li>
         <li><strong>ROI 外漏报：</strong>监控范围仅限玩家框选区域，目标出现在 ROI 之外时无法识别，属预期边界。</li>
         <li><strong>游戏更新风险：</strong>EVE 客户端更新可能调整 UI 配色或字体渲染，需在版本更新后复测识别效果。</li>
         <li><strong>PrintWindow 黑屏 / 空帧：</strong>个别窗口（独占全屏、特殊渲染管线）PrintWindow 可能取不到画面，自动回退 mss 屏幕抓取；仍失败时提示玩家切换窗口模式或恢复窗口。</li>

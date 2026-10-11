@@ -47,11 +47,10 @@ class TestConfig:
 
         assert DEFAULT_CONFIG["detection"]["colors"] == [
             "red",
-            "orange_red",
             "orange",
+            "yellow",
             "gray_white",
         ]
-
     def test_remote_alert_disabled_by_default(self, tmp_path):
         # 远程预警默认关闭（保持「默认完全本地」），冷却默认 5 分钟可选开启；
         # 旧 config.json 缺该节时深度合并补全
@@ -127,3 +126,42 @@ class TestConfig:
         from core.config import DEFAULT_CONFIG
 
         assert DEFAULT_CONFIG["detection"]["strictness"] == 50
+
+
+class TestColorMigration:
+    """警报颜色收敛到 4 色预设：旧配置里已移除的颜色键在加载时被剔除。"""
+
+    _DEFAULTS = ["red", "orange", "yellow", "gray_white"]
+
+    def _write(self, tmp_path, payload):
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return ConfigManager(path)
+
+    def test_removed_colors_filtered_on_load(self, tmp_path):
+        cfg = self._write(
+            tmp_path,
+            {
+                "detection": {
+                    "colors": ["red", "orange_red", "green", "azure", "gray_white"]
+                }
+            },
+        )
+        assert cfg.data["detection"]["colors"] == ["red", "gray_white"]
+
+    def test_all_removed_falls_back_to_defaults(self, tmp_path):
+        # 旧配置只勾了已移除的颜色：不能留空列表（掩码恒空 → 警报永不触发）
+        cfg = self._write(tmp_path, {"detection": {"colors": ["magenta", "black", "blue"]}})
+        assert cfg.data["detection"]["colors"] == self._DEFAULTS
+
+    def test_empty_colors_fall_back(self, tmp_path):
+        cfg = self._write(tmp_path, {"detection": {"colors": []}})
+        assert cfg.data["detection"]["colors"] == self._DEFAULTS
+
+    def test_invalid_colors_type_falls_back(self, tmp_path):
+        cfg = self._write(tmp_path, {"detection": {"colors": "red"}})
+        assert cfg.data["detection"]["colors"] == self._DEFAULTS
+
+    def test_duplicate_colors_removed_keeping_order(self, tmp_path):
+        cfg = self._write(tmp_path, {"detection": {"colors": ["yellow", "red", "yellow"]}})
+        assert cfg.data["detection"]["colors"] == ["yellow", "red"]

@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.colors import DEFAULT_ALERT_COLORS, EVE_COLORS
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -23,7 +24,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # 图标面积/宽高比/填充率等几何约束改为检测器内部自适应，不再暴露为配置项
         "confirm_frames": 3,
         "downscale": 2,
-        "colors": ["red", "orange_red", "orange", "gray_white"],
+        # 警报颜色：4 种总览预设色（红 / 橙 / 黄 / 灰白），默认全部启用
+        "colors": list(DEFAULT_ALERT_COLORS),
         # 识别程度三档：0（宽松）/ 50（适中）/ 100（严格）。
         # 首次使用（配置缺失 / 新装）默认 50（适中），应用保存后按用户上次记忆值持久化
         "strictness": 50,
@@ -72,6 +74,22 @@ def _normalize_detection(detection: dict) -> dict:
     return detection
 
 
+def _normalize_colors(value: object) -> list[str]:
+    """过滤已移除 / 未知的颜色键，去重保序；结果为空时回退默认四色。
+
+    旧版 config.json 可能保存着已移除的颜色（green / blue / magenta / black ...）：
+    这些键会被检测器安静忽略，若全被忽略则掩码恒为空、警报永不触发。故在此收敛，
+    并保证至少保留一种颜色（面板取消全部勾选时同样由此兜底）。
+    """
+    if not isinstance(value, (list, tuple)):
+        return list(DEFAULT_ALERT_COLORS)
+    kept: list[str] = []
+    for name in value:
+        if isinstance(name, str) and name in EVE_COLORS and name not in kept:
+            kept.append(name)
+    return kept or list(DEFAULT_ALERT_COLORS)
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """深度合并：override 覆盖 base；双方共有的 dict 递归合并。"""
     result = copy.deepcopy(base)
@@ -103,6 +121,10 @@ class ConfigManager:
             return copy.deepcopy(DEFAULT_CONFIG)
         if isinstance(data.get("detection"), dict):
             _normalize_detection(data["detection"])
+            # 警报颜色收敛到 4 色预设：旧配置里已移除的颜色键在此被剔除（见函数注释）
+            data["detection"]["colors"] = _normalize_colors(
+                data["detection"].get("colors")
+            )
             # 识别程度档位收编：旧五档遗留值（25/75 等）归档到最近三档，
             # 三档取值（0/50/100）原样保留，不二次迁移用户记忆的设置
             data["detection"]["strictness"] = _migrate_strictness(

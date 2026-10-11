@@ -105,7 +105,7 @@ QPushButton {{
 }}
 QPushButton:hover {{ background-color: {SURFACE_HOVER}; }}
 QPushButton:pressed {{ background-color: {SURFACE_PRESSED}; }}
-QPushButton:focus:!checked {{ border: 1px solid {PRIMARY}; }}
+/* 不绘制焦点外框：按钮点击后会保留键盘焦点，若给 :focus 加描边就会残留一圈蓝框 */
 QPushButton:checked {{
     background-color: {SURFACE_HOVER};
     border: 2px solid {PRIMARY};
@@ -244,6 +244,25 @@ def apply(app) -> None:
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE_SHEET)
     app.setPalette(_palette())
+
+
+def primary_button_qss() -> str:
+    """「主行动按钮」的内联样式串（与 QSS 中 ``role=primary`` 一致）。
+
+    供需要**按状态临时切换样式**的按钮使用：直接 ``setStyleSheet(该串)`` 打开、
+    ``setStyleSheet("")`` 复原。Qt 在 ``setStyleSheet`` 内部完成重新 polish，比在
+    Python 侧调用 ``style().unpolish/polish`` 安全（后者实测会破坏堆内存）。
+    """
+    return (
+        f"QPushButton {{ background-color: {PRIMARY}; border: 1px solid {PRIMARY};"
+        f" color: #ffffff; font-weight: 600; }}"
+        f"QPushButton:hover {{ background-color: {PRIMARY_HOVER};"
+        f" border-color: {PRIMARY_HOVER}; }}"
+        f"QPushButton:pressed {{ background-color: {PRIMARY_PRESSED};"
+        f" border-color: {PRIMARY_PRESSED}; }}"
+        f"QPushButton:disabled {{ background-color: {SURFACE}; color: #5a6275;"
+        f" border-color: {BORDER}; }}"
+    )
 
 
 def palette() -> QPalette:

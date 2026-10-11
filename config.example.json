@@ -14,8 +14,8 @@
     "downscale": 2,
     "colors": [
       "red",
-      "orange_red",
       "orange",
+      "yellow",
       "gray_white"
     ],
     "strictness": 50

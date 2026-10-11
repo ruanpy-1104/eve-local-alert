@@ -63,11 +63,12 @@ python main.py
   "detection": {
     "confirm_frames": 3,
     "downscale": 2,
-    "colors": ["red", "orange_red", "orange", "gray_white"],
+    "colors": ["red", "orange", "yellow", "gray_white"],
     "strictness": 50
   },
   "alert": {
-    "sound_file": "assets/alert.wav"
+    "sound_file": "assets/alert.wav",
+    "resume_delay": 10
   },
   "remote_alert": {
     "enabled": false,
@@ -90,18 +91,19 @@ python main.py
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `window.title_keyword` | string | `"EVE"` | 窗口标题匹配关键字（大小写不敏感）。 |
-| `window.process_name` | string | `"exefile.exe"` | 进程名匹配（优先于标题）。 |
+| `window.process_name` | string | `"exefile.exe"` | 进程名匹配（优先于标题）。面板选择目标程序时与标题关键字一起写入；进程名取不到（高权限进程）时写入空串，避免残留旧进程名让定位命中上一个窗口。 |
 | `roi.x` / `roi.y` | float | 0.10 / 0.10 | ROI 左上角归一化坐标（0–1，以客户区为基准）。 |
 | `roi.width` / `roi.height` | float | 0.30 / 0.40 | ROI 宽高归一化比例。 |
 | `detection.confirm_frames` | int | 3 | 连续命中帧数（时序确认）。 |
 | `detection.downscale` | int | 2 | 下采样倍数（1 为不缩放）。 |
-| `detection.colors` | string[] | 4 色 | 启用的警报颜色键（见 `core/colors.py` 的 `EVE_COLORS`）。 |
-| `detection.strictness` | int | 50 | 识别程度三档：0（宽松）/ 50（适中）/ 100（严格）。首次使用（无历史设置）默认 50（适中），应用保存后按用户记忆值持久化；旧版五档遗留值（25/75 等）加载时自动归档到最近三档（25→0、75→50），三档取值原样保留（不二次迁移）。 |
+| `detection.colors` | string[] | 红 / 橙 / 黄 / 灰白 | 启用的警报颜色键（见 `core/colors.py` 的 `EVE_COLORS`，共 4 种）。加载时剔除已移除 / 未知的颜色键并去重；剔除后为空则回退默认四色。 |
+| `detection.strictness` | int | 50 | 识别程度三档：0（宽松）/ 50（适中）/ 100（严格），只调节饱和度 / 明度门槛（色相窗口固定，见 §7）。首次使用（无历史设置）默认 50（适中），应用保存后按用户记忆值持久化；旧版五档遗留值（25/75 等）加载时自动归档到最近三档（25→0、75→50），三档取值原样保留（不二次迁移）。 |
 | `alert.sound_file` | string | `"assets/alert.wav"` | 警报音相对项目根路径；缺失时回退系统蜂鸣。 |
-| `remote_alert.enabled` | bool | `false` | 远程预警开关（Server酱 微信推送）。**每次启动强制重置为 `false`**（见 `core/config.py` 的 `_load`），其余选项保留用户最后一次修改；关闭时不产生任何网络请求。 |
+| `alert.resume_delay` | int | `10` | 暂停预警的最短持续时长（秒）：暂停至少持续该时长，且目标不在视野时才自动恢复；0 表示黑屏即恢复。 |
+| `remote_alert.enabled` | bool | `false` | 远程预警开关（Server酱 微信推送）。**每次启动强制重置为 `false`**（见 `core/config.py` 的 `_load`），其余选项保留用户最后一次修改；关闭时不产生任何网络请求。面板「远程预警」按钮按此值切换样式：开启时套用与「开始预警」相同的主行动样式（`role=primary`）作状态提示，关闭时恢复普通次要样式（`_update_remote_button()`，动态属性变更后 unpolish/polish 刷新 QSS）。 |
 | `remote_alert.sendkey` | string | `""` | Server酱 SendKey，经面板「远程预警」对话框引导获取；保存为明文本地配置。 |
 | `remote_alert.cooldown_enabled` | bool | `false` | 是否启用更长的冷却间隔（免费版每日 5 条额度，建议开启）。 |
-| `remote_alert.cooldown_minutes` | int | `5` | 用户冷却间隔（分钟），仅 `cooldown_enabled` 时生效；与内置 30 秒防抖取较大值。 |
+| `remote_alert.cooldown_minutes` | int | `5` | 用户冷却间隔（分钟），仅 `cooldown_enabled` 时生效；与内置 5 秒冷却**同时满足**才会发送（实际最小间隔取两者较大者）。 |
 | `loop.fps` | int | 6 | 检测循环帧率（越低 CPU 占用越低）。 |
 | `logging.level` | string | `"error"` | 日志级别：debug / info / warning / error / critical。 |
 | `logging.file` | string | `"logs/eve-alert.log"` | 日志文件相对路径（相对数据目录 `app_dir()`；开发期为项目根，打包后为 `%APPDATA%\eve-alert`）。 |
@@ -128,15 +130,18 @@ class ConfigManager:
 ### 3.2 colors（颜色预设）
 
 ```python
-EVE_COLORS: dict[str, dict]          # 12 种颜色：label / rgb / center_h / wrap / achromatic 等
+EVE_COLORS: dict[str, dict]          # 4 种颜色：label / rgb / h_ranges / achromatic
 COLOR_ORDER: tuple[str, ...]         # UI 展示顺序
-DEFAULT_ALERT_COLORS: list[str]      # 默认启用：red / orange_red / orange / gray_white
+DEFAULT_ALERT_COLORS: list[str]      # 默认启用：red / orange / yellow / gray_white
 DEFAULT_STRICTNESS: int              # 默认识别程度 50
 
+def is_achromatic(name: str) -> bool: ...                       # 是否无色相（灰白）
 def color_ranges(name: str, strictness: float = 0.5) -> list[tuple[tuple, tuple]]: ...
 ```
 
-- `color_ranges` 返回指定颜色在给定严格度（0 宽松 ~ 1 严格）下的 HSV 阈值区间列表；彩色返回 1–2 个区间（红色跨色相环两端拆为两个），灰白 / 黑返回明度区间；未知颜色返回空列表。
+- 保留的 4 种预设取自「样例/总览可选颜色.png」实测采样：红 (191,0,0) / 橙 (255,89,0) / 黄 (255,178,0) / 灰白 (178,178,178)。
+- **色相窗口按相邻预设的中点固定划分、两两不相交**：红 `0–5 ∪ 175–179`（跨色相环 0 点，拆两段）、橙 `6–15`、黄 `16–26`；灰白用明度区间描述。这样勾「橙」不会连带命中「黄」（三色暖色在 H 上只相距 10~11）。
+- `color_ranges` 返回指定颜色在给定严格度（0 宽松 ~ 1 严格）下的 HSV 阈值区间列表；**严格度只抬高饱和度 / 明度下限**，不收窄色相窗口（实测总览红图标 H≈1.5–3.4，收窄会在严格档造成漏报）；未知颜色（含已移除的旧颜色键）返回空列表。
 
 ### 3.3 window_locator（窗口定位）
 
@@ -151,13 +156,14 @@ class WindowInfo:
 def is_minimized(hwnd: int) -> bool: ...   # 基于 win32gui.IsIconic
 
 class WindowLocator:
-    def __init__(self, title_keyword: str | None = None, process_name: str | None = None): ...
-    def find(self) -> WindowInfo: ...       # 优先进程名匹配，其次标题；未命中抛 RuntimeError
+    def __init__(self, title_keyword=None, process_name=None, prefer_handle: int | None = None): ...
+    def find(self) -> WindowInfo: ...       # 设了 prefer_handle 只认该句柄；否则进程名优先、其次标题；未命中抛 RuntimeError
     @staticmethod
     def list_all() -> list[WindowInfo]: ... # 枚举所有可见顶层窗口（目标选择器用）
 ```
 
 - `rect` 为**客户区**的屏幕坐标，捕获模块直接使用。
+- **`prefer_handle`（只跟踪用户点选的窗口）**：面板选择目标程序后会把该窗口句柄记下来，随后的定位（监控线程、框选会话、独立预览）都带上它，`find()` 只认这个句柄，句柄失效即抛 `RuntimeError`（=「目标窗口已关闭」）。**不再退回按进程名 / 标题关键字匹配**——否则同一进程的其它窗口（或标题相近的窗口）会在目标关闭后被当成目标继续监控，表现为界面停在原地、或框选预览停在一帧黑屏（隐藏窗口 PrintWindow 渲染为纯黑 → 回退抓屏拿到空桌面）。为避免系统复用句柄，命中句柄时还会校验进程名是否与配置一致。未设 `prefer_handle` 时（`--cli` 无 UI 闭环、启动时按配置首次定位）保持原有关键字匹配行为。
 
 ### 3.4 capture（画面捕获）
 
@@ -195,7 +201,7 @@ class ROI:
 class Detector:
     def __init__(self, confirm_frames=3, downscale=2, colors=None, strictness=50,
                  min_area=None, max_area=None, min_aspect=0.7, max_aspect=1.6,
-                 min_fill=0.70, achromatic_fill=0.82, gray_v_max=155.0,
+                 min_fill=0.70, achromatic_fill=0.82, gray_v_max=200.0,
                  need_name=True, name_v=90): ...
     def reset(self) -> None: ...
     def red_mask(self, frame_bgr: np.ndarray) -> np.ndarray: ...          # 颜色掩码（下采样空间）
@@ -207,7 +213,7 @@ class Detector:
 - 检测对象是玩家名字**前方**的**实心小图标**（近正方形），而非文字条形；游戏内可自定义字体 / 图标大小，故判定**不依赖固定像素**。
 - 面积阈值随帧比例自适应：下限仅剔除噪点级小色块（取固定极小面积与帧面积 0.05% 二者较小值）、上限按帧面积留余量（铺满多数区域的整块底色除外）。`min_area` / `max_area` 显式给出时覆盖自动值。
 - `min_aspect` / `max_aspect`（0.7–1.6）约束「近方形」；**填充率按颜色类别区别对待**：彩色图标下采样后填充率降至 0.7–0.8，用常规 `min_fill`（≥0.70）；名字文字是白色/灰白、只会污染「灰白」掩码，故灰白用更高 `achromatic_fill`（≥0.82）把碎笔画文字剔除，实心方块图标（fill≥0.9）仍命中。
-- **灰白「灰而非白」判定**：灰白检测额外检查每个色块的**平均明度**（`gray_v_max`，默认 155）：平均 V 超过阈值判为白色（名字文字、图标里的白色高光）而剔除；中立灰图标平均 V 偏低（样例约 129）不受影响。据此解决极小字体下名字被误识别、纯图标 ROI 里图标内白色被误报两个问题。
+- **灰白「灰而非白」判定**：灰白检测额外检查每个色块的**平均明度**（`gray_v_max`，默认 200）：平均 V 超过阈值判为白色（名字文字、图标里的纯白高光）而剔除。中立灰图标实测平均 V≈107–138、调色板灰白色为 178，都落在阈值内；纯白（V≈255）才被剔除——上限取 200 是为了覆盖调色板自身的灰白，同时仍能挡住近纯白色块（白名字文字另有填充率 / 行首判据兜底）。
 - **灰白「行首图标」判定**：名字文字是一串，每个字**同行左侧**必有前一个字或图标；真正的阵营图标位于行首、左侧空白。`_candidate_boxes` 对灰白检测启用 `left_clear=True`，用 `_has_left_content` 检查色块同行左侧是否已有同色内容，有则判为名字文字剔除，进一步抑制极小字体名字形成的紧凑色块而不影响行首图标。
 - `need_name`：两级自适应名字验证。若帧内存在某图标带「对齐的明亮名字文字」（V ≥ `name_v`），则只保留此类图标，剔除背景中颜色相近但非玩家条目的干扰（如红色恒星）；若整帧都没有名字（纯图标 ROI），则退化为仅凭几何判定，无名字参考也能识别。带宽 / 带高随图标尺寸缩放以匹配对齐。
 - **彩色与灰白分开建掩码检测**（`_mask_for` 按颜色子集建掩码、`_candidate_boxes` 按指定填充率筛块），两组结果按颜色互斥直接拼接，避免不同填充率互相干扰。
@@ -311,8 +317,8 @@ function red_mask(frame_bgr):
     return mask
 
 function red_boxes(frame_bgr):
-    gray = [c 属于 self.colors 且 c == "gray_white"]
-    colored = [c 属于 self.colors 且 c != "gray_white"]   # 含黑
+    gray = [c 属于 self.colors 且 is_achromatic(c)]        # 灰白
+    colored = [c 属于 self.colors 且 not is_achromatic(c)] # 红 / 橙 / 黄
     boxes = []
     if colored:
         mask, v = _mask_for(frame_bgr, colored)           # 彩色掩码
@@ -367,9 +373,14 @@ function detect(frame_bgr):
 
 - 工作线程独立完成「捕获 → 检测 → 警报」，通过 Qt 信号上报状态 / 预览帧。
 - **最小化降级：** 目标窗口最小化（`IsIconic`）时暂停捕获并停止警报，经状态信号提示「目标窗口已最小化，无法监控，请恢复窗口」，同时播放一次提示音并置顶面板提醒玩家（仅最小化场景触发；窗口关闭走「目标窗口已关闭 → 退回未选择状态」流程，不加提示音），恢复后自动继续——监控流程不被中断。
+- **目标关闭判定：** 监控线程、框选会话、独立预览都以「用户点选的目标窗口句柄」为准（见 §3.3 的 `prefer_handle`）。窗口关闭后立即判定「目标窗口已关闭」并退回未选择状态：监控线程发 `window_lost` → 面板清空预览、复位按钮并提示重新选择；框选会话经 `_end_selection(message)` 停止定时器、释放捕获、**清空最后一帧画面**（避免停在过期 / 黑屏画面上）并提示重新选择。句柄在定位与读取之间失效（win32 抛 `pywintypes.error`）也走同一条路径，不外抛异常。
 - **竞态处理：** 手动停止监控时由面板置停止标志并等待线程退出，`run()` 仅在自然退出时发送「已停止」信号，避免手动停止与自然结束竞态覆盖状态。
+- **停止超时保护：** 若采集被卡住（如 PrintWindow 阻塞）导致线程未在 2 秒内退出，面板**保留工作线程引用**并以 `_worker_running()` 判定，阻止「开始预警 / 框选」抢跑——避免两个监控线程同时抓屏、同时写预览与状态栏。
+- **窗口丢失后不自动改认：** `_on_window_lost` 保留目标句柄，下次点「开始预警」会因句柄失效直接引导重新选择程序，而不是按进程名 / 标题悄悄锁到别的窗口。
+- **「开始预警」兼作「选择程序」：** `_start_monitor` 先看 `_has_target` 与目标句柄——未选择目标（或句柄已失效）时，本次点击只执行 `_select_target()`（弹选择框 → 选完进入框选）并直接返回，**不启动监控线程**；用户框好监控区域后再点一次「开始预警」才真正开始。这样杜绝了「点开始预警 → 弹窗选程序 → 选完立刻开跑、来不及框选」的体验问题。框选与保存的提示文案也统一补上了「完成后点『开始预警』」。
 - **预警暂停：** 面板「暂停预警」按钮（checkable）经线程安全的 `set_paused()` 置位。暂停期间即使命中也不播放警报；暂停至少持续设定时长（`alert.resume_delay`，默认 10 秒，可在「暂停设置」调整，0 秒为不延时），时长满后目标不在视野时工作线程自动清除暂停并发出 `alert_paused(False)`，面板同步复位按钮，下次命中恢复报警——最短时长可避免进出空间站等短暂黑屏（数秒无检测）提前解除暂停。暂停期间顶部状态栏由「敌袭 / 安全」切换为黄色「已暂停」标记（点击按钮立即刷新，不随命中状态闪烁），自动恢复后回到「敌袭 / 安全」实时指示。
 - **独立预览窗口（`PreviewDialog`）：** 与监控线程独立的另一套捕获 + 检测循环（6 FPS 定时器），在独立窗口叠加识别框并显示命中状态 / FPS；检测参数变化时自动重建 `Detector` 保持与配置一致。窗口非模态，可保留在旁同时操作主面板。
+- **预览的句柄容错：** 窗口解析与「最小化 / 客户区尺寸」读取单独收敛异常——句柄失效时 win32 抛的是 `pywintypes.error`（并非 `RuntimeError`），会被丢弃并在下一帧重新定位，不会逃出 Qt 槽被记成「未捕获异常（闪退）」。
 - 预览帧在捕获成功后经信号发送；捕获失败发 `None` 触发占位提示。
 
 ---
@@ -378,11 +389,11 @@ function detect(frame_bgr):
 
 取代早期「取样器 + 阈值滑动条」的校准器，改为**预设颜色勾选 + 识别程度滑块**，降低调参门槛：
 
-1. **色块勾选：** 展示 12 种 EVE 总览颜色色块（不显示名字），玩家多选需要警报的颜色，默认勾选红 / 橙红 / 橙 / 灰白。
-2. **识别程度滑块：** 0（宽松）~ 100（严格）的**固定档位 0 / 50 / 100**（拖动时自动吸附），按比例线性插值色相带宽与饱和度 / 明度下限（见 `core/colors.py`）。收到误报往严格调，漏报往宽松调；滑块首次使用默认停在 50（适中），应用保存后按 `detection.strictness` 记忆值恢复。
-3. **应用并保存：** 将 `detection.colors` 与 `detection.strictness` 写回 `config.json`，按钮行左侧短暂显示绿色「已应用」反馈。
+1. **色块勾选：** 展示 4 种 EVE 总览颜色色块（红 / 橙 / 黄 / 灰白，**一行等宽平铺**，色块上显示颜色名、勾选前缀 ✓），玩家多选需要警报的颜色，默认全部勾选。一个都不勾时拒绝应用并提示「请至少勾选一种颜色」（否则掩码恒为空、警报永不触发）。
+2. **识别程度滑块：** 0（宽松）~ 100（严格）的**固定档位 0 / 50 / 100**（拖动时自动吸附），**只调节饱和度 / 明度下限**（色相窗口固定划分，见 §3.2）。收到误报往严格调，漏报往宽松调；滑块首次使用默认停在 50（适中），应用保存后按 `detection.strictness` 记忆值恢复。
+3. **应用：** 将 `detection.colors` 与 `detection.strictness` 写回 `config.json`，按钮行左侧短暂显示绿色「已应用」反馈（校验失败时为橙色提示）。
 
-> 布局：标题「警报颜色」「识别程度」作为**内容区块上方的纯文字标题**（无边框、位于区块外侧）；色块放在浅色卡片容器内；识别程度为一行滑块（无卡片框，仅轨道填充有颜色，其余与对话背景一致）。颜色选择对话框不再内嵌实时预览：预览能力已移至主面板「预览」按钮的独立窗口（`PreviewDialog`），颜色选择只负责配置项。
+> 布局：标题「警报颜色」「识别程度」作为**内容区块上方的纯文字标题**（无边框、位于区块外侧）；色块放在浅色卡片容器内（4 个色块单行等分）；识别程度为一行滑块（无卡片框，仅轨道填充有颜色，其余与对话背景一致）。颜色选择对话框不再内嵌实时预览：预览能力已移至主面板「预览」按钮的独立窗口（`PreviewDialog`），颜色选择只负责配置项。
 
 ---
 
@@ -392,9 +403,12 @@ function detect(frame_bgr):
 
 | 用例文件 | 覆盖内容 |
 | --- | --- |
-| `test_config.py` | 默认配置 / 深度合并 / 读写往返（断言 `DEFAULT_CONFIG`，不依赖用户 config.json） |
+| `test_config.py` | 默认配置 / 深度合并 / 读写往返 / 颜色键迁移兜底（断言 `DEFAULT_CONFIG`，不依赖用户 config.json） |
 | `test_logger.py` | 级别解析、`setup_logging` 写文件与格式 |
-| `test_colors` 相关 | 12 色阈值区间、严格度插值、未知颜色空列表（并入 `test_config.py` / `test_detector.py`） |
+| `test_colors.py` | 4 色预设、色相窗口两两互斥、严格度插值（只抬高 S/V 下限）、未知 / 已移除颜色返回空列表 |
+| `test_color_picker.py` | 颜色选择对话框（offscreen）：4 色块排版与勾选标记、应用写回、全不勾拒绝、默认全选 |
+| `test_panel_smoke.py` | 控制面板冒烟（offscreen）：界面可构建、未选目标时按钮置灰、停止无 worker 安全、进程名未知时写空串 |
+| `test_theme.py` | 主题 QSS 像素级校验（offscreen）：按钮获得焦点后不残留蓝色外框、主行动按钮自身蓝底不受影响 |
 | `test_detector.py` | 纯色正负样本、`red_boxes` 过滤、`detect` 时序确认边界 |
 | `test_capture.py` | `_crop` 越界钳制、`client_size`、PrintWindow 失败回退 |
 | `test_pipeline.py` | 配置 → ROI → 捕获 → 检测 → 警报主链路 |
@@ -405,6 +419,8 @@ function detect(frame_bgr):
 | `test_notifier.py` | Server酱 请求构造 / 结果解析 / 失败与空 SendKey 短路 / 异步触发条件 |
 
 运行：`python -m pytest`（配置见 `pytest.ini`）。
+
+> **Qt 测试约定：** 全部 Qt 测试走 `QT_QPA_PLATFORM=offscreen`，并在 `tests/conftest.py` 里用**会话级** `app` fixture 共享同一个 `QApplication`（各模块自建模块级 fixture 时，模块切换会出现引用计数归零的窗口）。渲染校验一律对**隐藏控件**调用 `grab()` / `render()` 触发绘制（`test_preview.py` 起就如此）：offscreen 平台下 `show()` 让控件进入可见状态，在大批量 Qt 测试会话中曾出现非确定性崩溃。另：不要用 `ui.theme.apply()`（会 `app.setStyle("Fusion")`，在已有控件的会话里切换样式不安全），需要样式时只装 `theme.STYLE_SHEET`。
 
 ### 8.2 准确率与延迟基准
 

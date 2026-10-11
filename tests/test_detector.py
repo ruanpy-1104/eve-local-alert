@@ -2,10 +2,20 @@
 import cv2
 import numpy as np
 
+from core.colors import DEFAULT_ALERT_COLORS, EVE_COLORS, color_ranges
 from core.detector import Detector
 
-RED = (0, 0, 255)        # BGR 纯红
-BLUE = (255, 0, 0)       # BGR 纯蓝
+# 预设色直接用调色板实测 RGB（转 BGR），保证测试与「颜色选择」里的色块一致
+def _bgr(name: str) -> tuple[int, int, int]:
+    r, g, b = EVE_COLORS[name]["rgb"]
+    return (b, g, r)
+
+
+RED = (0, 0, 255)        # BGR 纯红（H=0，与预设红同色相）
+ORANGE = _bgr("orange")  # 总览「橙」预设 (255,89,0) → H=10
+YELLOW = _bgr("yellow")  # 总览「黄」预设 (255,178,0) → H=21
+PALETTE_GRAY = _bgr("gray_white")  # 调色板灰白 (178,178,178) → V=178
+BLUE = (255, 0, 0)       # BGR 纯蓝（已移除的颜色，不应命中）
 GRAY = (129, 129, 129)   # BGR 中立灰白图标色（V≈129）
 DARK_GRAY = (80, 80, 80)  # BGR 暗灰（低于灰白 V 下限）
 WHITE = (255, 255, 255)  # 名字文字白色
@@ -43,7 +53,7 @@ class TestDetectorThreshold:
         assert Detector().has_red(_icon_frame(RED))
 
     def test_blue_icon_not_detected(self):
-        # 默认未启用蓝色，图标不应命中
+        # 蓝色不在 4 色预设内，图标不应命中
         assert not Detector().has_red(_icon_frame(BLUE))
 
     def test_gray_white_icon_detected(self):
@@ -55,7 +65,7 @@ class TestDetectorThreshold:
         assert not Detector().has_red(_icon_frame(DARK_GRAY))
 
     def test_black_icon_not_default(self):
-        # 黑色默认未启用
+        # 黑色已移出预设（深色总览背景下无法与背景分离），不应命中
         assert not Detector().has_red(_icon_frame((0, 0, 0)))
 
     def test_too_dark_red_rejected(self):
@@ -188,16 +198,20 @@ class TestDetectorMask:
 
 
 class TestMultiColor:
-    """多警报颜色：按 EVE 总览预设色进行检测。"""
+    """多警报颜色：4 种总览预设色（红 / 橙 / 黄 / 灰白）各自命中、互不串色。"""
 
-    def test_blue_detected_when_enabled(self):
-        d = Detector(colors=["blue"])
-        assert d.has_red(_icon_frame(BLUE))
-        assert not d.has_red(_icon_frame(RED))
+    def test_each_preset_detects_own_palette_color(self):
+        # 用调色板实测颜色绘制图标：勾了哪个色，就必须能命中哪个色
+        for name in ("red", "orange", "yellow", "gray_white"):
+            color = RED if name == "red" else _bgr(name)
+            assert Detector(colors=[name]).has_red(_icon_frame(color)), name
 
-    def test_green_detected_when_enabled(self):
-        d = Detector(colors=["green"])
-        assert d.has_red(_icon_frame((0, 255, 0)))  # BGR 绿 -> H=60
+    def test_hue_windows_do_not_overlap(self):
+        # 色相窗口按相邻预设中点划分：勾「橙」不会命中「黄」图标，反之亦然
+        assert not Detector(colors=["orange"]).has_red(_icon_frame(YELLOW))
+        assert not Detector(colors=["yellow"]).has_red(_icon_frame(ORANGE))
+        assert not Detector(colors=["red"]).has_red(_icon_frame(ORANGE))
+        assert not Detector(colors=["red"]).has_red(_icon_frame(YELLOW))
 
     def test_red_default_only(self):
         d = Detector()
@@ -205,35 +219,55 @@ class TestMultiColor:
         assert not d.has_red(_icon_frame(BLUE))
 
     def test_multiple_colors_union(self):
-        d = Detector(colors=["red", "blue"])
+        d = Detector(colors=["red", "yellow"])
         assert d.has_red(_icon_frame(RED))
-        assert d.has_red(_icon_frame(BLUE))
-        assert not d.has_red(_icon_frame((0, 255, 0)))  # 未启用绿色
+        assert d.has_red(_icon_frame(YELLOW))
+        assert not d.has_red(_icon_frame(ORANGE))  # 未启用橙色
 
     def test_colors_str_single(self):
-        d = Detector(colors="blue")
-        assert d.colors == ("blue",)
+        d = Detector(colors="orange")
+        assert d.colors == ("orange",)
 
     def test_unknown_color_ignored(self):
         d = Detector(colors=["red", "not_a_color"])
         assert d.has_red(_icon_frame(RED))
         assert not d.has_red(_icon_frame(BLUE))
 
+    def test_removed_colors_ignored(self):
+        # 已移除的颜色（旧配置遗留）不再命中任何目标
+        for removed, color in (("blue", BLUE), ("green", (0, 255, 0)), ("black", (0, 0, 0))):
+            assert not Detector(colors=[removed]).has_red(_icon_frame(color)), removed
+
     def test_gray_white_detected_when_enabled(self):
         d = Detector(colors=["gray_white"])
         assert d.has_red(_icon_frame(GRAY))
         assert not d.has_red(_icon_frame(DARK_GRAY))  # 暗灰低于灰白 V 下限
 
-    def test_black_detected_when_enabled(self):
-        d = Detector(colors=["black"])
-        # 黑色图标需置于明亮背景才可分辨（纯黑背景会与图标融为一体）
-        assert d.has_red(_icon_frame((0, 0, 0), bg=(200, 200, 200)))
-        assert not d.has_red(_icon_frame((0, 0, 100), bg=(200, 200, 200)))  # V 过高非黑色
+    def test_palette_gray_white_swatch_detected(self):
+        # 调色板自身的灰白 (178,178,178) 也应命中（明度上限已放宽到 200）
+        assert Detector(colors=["gray_white"]).has_red(_icon_frame(PALETTE_GRAY))
 
-    def test_default_colors_include_gray_white_not_black(self):
+    def test_default_colors_are_the_four_presets(self):
         d = Detector()
-        assert d.has_red(_icon_frame(GRAY))  # 灰白默认启用
-        assert not d.has_red(_icon_frame((0, 0, 0)))  # 黑色默认未启用
+        assert DEFAULT_ALERT_COLORS == ["red", "orange", "yellow", "gray_white"]
+        for color in (RED, ORANGE, YELLOW, GRAY):
+            assert d.has_red(_icon_frame(color))
+        assert not d.has_red(_icon_frame(BLUE))
+
+    def test_preset_ranges_are_hue_disjoint(self):
+        # 4 色预设的色相窗口两两不相交（避免勾一个等于勾两个）
+        covered: dict[str, set[int]] = {}
+        for name in DEFAULT_ALERT_COLORS:
+            if name == "gray_white":
+                continue
+            hues: set[int] = set()
+            for low, high in color_ranges(name, 0.5):
+                hues |= set(range(low[0], high[0] + 1))
+            covered[name] = hues
+        names = list(covered)
+        for i, a in enumerate(names):
+            for b in names[i + 1 :]:
+                assert not (covered[a] & covered[b]), f"{a} 与 {b} 色相窗口重叠"
 
 
 class TestGrayWhiteSeparation:

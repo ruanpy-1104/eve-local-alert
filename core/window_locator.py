@@ -30,15 +30,33 @@ def is_minimized(hwnd: int) -> bool:
 class WindowLocator:
     """定位并锁定 EVE 游戏窗口。"""
 
-    def __init__(self, title_keyword: str | None = None, process_name: str | None = None):
+    def __init__(
+        self,
+        title_keyword: str | None = None,
+        process_name: str | None = None,
+        prefer_handle: int | None = None,
+    ):
         self.title_keyword = title_keyword
         self.process_name = process_name
+        # 用户明确点选的目标窗口句柄：设定后只跟踪这一个窗口，句柄失效即视为
+        # 「目标已关闭」。否则会按进程名 / 标题关键字重新匹配——同一进程的其它窗口
+        # （或标题相近的窗口）会在目标关闭后被当成目标继续监控，表现为界面停在原地
+        # 或预览黑屏。
+        self.prefer_handle = prefer_handle
 
     def find(self) -> WindowInfo:
         """返回命中的可见窗口；未命中抛出 RuntimeError。
 
-        优先返回进程名精确匹配的窗口（文档约定），无进程匹配时退回标题关键字匹配。
+        设定了 ``prefer_handle`` 时**只认这个句柄**（用户点选的那个窗口），句柄失效
+        即抛 RuntimeError，不再退回到按进程名 / 标题匹配其它窗口；未设定时优先返回
+        进程名精确匹配的窗口（文档约定），无进程匹配时退回标题关键字匹配。
         """
+        if self.prefer_handle:
+            info = self._info_for_handle(self.prefer_handle)
+            if info is None:
+                raise RuntimeError("目标窗口已关闭，请重新选择目标程序")
+            return info
+
         candidates: list[WindowInfo] = []
 
         def _callback(hwnd: int, _extra) -> None:
@@ -55,6 +73,22 @@ class WindowLocator:
             raise RuntimeError("未找到匹配的 EVE 窗口，请检查 config.json 的 window 配置")
         win = self._pick(candidates)
         return win
+
+    def _info_for_handle(self, hwnd: int) -> WindowInfo | None:
+        """按句柄读取窗口信息；窗口已销毁或句柄被复用给别的窗口时返回 None。"""
+        try:
+            if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+                return None
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            pname = self._process_name(pid)
+            # 句柄可能被系统复用给别的窗口：进程名对不上即判为原目标已关闭
+            if self.process_name and pname and pname.lower() != self.process_name.lower():
+                return None
+            return WindowInfo(
+                hwnd, win32gui.GetWindowText(hwnd), pname, self._client_rect(hwnd)
+            )
+        except Exception:
+            return None
 
     def _pick(self, candidates: list[WindowInfo]) -> WindowInfo:
         """选窗优先级：进程+标题都命中 > 仅进程命中 > 仅标题命中。"""

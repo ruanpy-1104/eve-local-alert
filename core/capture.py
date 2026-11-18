@@ -89,6 +89,50 @@ class Capture:
         # 回退：按屏幕坐标捕获（PrintWindow 失效的独占全屏等场景）。
         # 句柄可能已失效 / 区域尺寸非法（mss 抛 ScreenShotError），统一视为捕获失败返回 None，
         # 由上层跳过本帧或重新定位窗口。
+        return self._grab_screen(hwnd, region)
+
+    def grab_regions(
+        self, hwnd: int, regions: list[dict[str, int]]
+    ) -> list[np.ndarray | None]:
+        """一次 PrintWindow 渲染整窗，再按多个客户区相对区域分别裁剪。
+
+        渲染失败时对每个区域单独走 mss 回退。返回值与 ``regions`` 等长，
+        单个区域非法或采集失败对应 ``None``，不抛异常。
+        """
+        if not regions:
+            return []
+        # 沿用 grab_window 的双 flags 回退；整窗渲染成功时，所有 ROI 共享同一帧。
+        frame = self._printwindow_capture(hwnd)
+        if frame is not None:
+            results: list[np.ndarray | None] = []
+            for region in regions:
+                try:
+                    if not self._valid_region(region):
+                        results.append(None)
+                        continue
+                    cropped = self._crop(frame, region)
+                    results.append(cropped if cropped.size else None)
+                except Exception:
+                    results.append(None)
+            return results
+        return [self._grab_screen(hwnd, region) for region in regions]
+
+    @staticmethod
+    def _valid_region(region: object) -> bool:
+        """判断客户区相对区域是否有正的宽高。"""
+        if not isinstance(region, dict):
+            return False
+        try:
+            return int(region["width"]) > 0 and int(region["height"]) > 0
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    def _grab_screen(
+        self, hwnd: int, region: dict[str, int]
+    ) -> np.ndarray | None:
+        """按客户区相对区域执行 mss 屏幕回退。"""
+        if not self._valid_region(region):
+            return None
         try:
             left, top, right, bottom = win32gui.GetClientRect(hwnd)
             ox, oy = win32gui.ClientToScreen(hwnd, (left, top))

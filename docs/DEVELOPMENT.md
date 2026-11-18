@@ -474,3 +474,38 @@ nuitka --standalone --enable-plugin=pyside6 --windows-console-mode=disable `
 | P2 | 目标识别 + 颜色选择 | `core/detector.py`、`core/colors.py`、`ui/panel.py`（颜色选择对话框） | ✅ |
 | P3 | 连续警报 + 最小化降级 | `core/alerter.py`、`ui/panel.py`（MonitorWorker） | ✅ |
 | P4 | 性能优化 + 面板自由缩放 + 打包 | `ui/panel.py`、`requirements.txt` | ✅ |
+
+---
+
+## 11. v1.2 无人机监控与悬浮窗实现
+
+### 11.1 新增配置
+
+```json
+{
+  "drone": {
+    "enabled": false,
+    "count": 5,
+    "roi": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
+    "idle_sound": "assets/drone_idle.wav",
+    "alert_sound": "assets/drone_alert.wav"
+  },
+  "overlay": {"visible": false, "locked": false, "x": null, "y": null}
+}
+```
+
+旧配置由深度合并自动补全。`drone.count` 在加载时钳制到 1–5；无人机 ROI 任一坐标非数字、越界或宽高不大于 0 时规整为零 ROI；`overlay.x/y` 只接受整数，其他类型转为 `null`。
+
+### 11.2 接口与线程边界
+
+- `Capture.grab_regions(hwnd, regions)` 返回与 `regions` 等长的裁剪帧列表；优先一次整窗 PrintWindow，渲染失败后逐区域 mss 回退。
+- `DroneDetector.update(frame_bgr)` 返回 `DroneState`，内部维护空闲确认、血条连续帧和战斗锁存；`update(None)` 与极小 / 空帧安全返回 false 状态。
+- `MonitorWorker` 新增 `flight_state(str)`、`drone_idle()`、`drone_damaged(bool)`。`flight_state` 只发状态键，悬浮窗不解析富文本。
+- `SoundPlayer` 由主面板在 GUI 线程持有；禁止在监控线程直接创建 QtMultimedia 对象。offscreen 或没有 `QCoreApplication` 时所有播放方法静默返回。
+- `DroneDialog` 的框选只更新 `drone.roi`，不修改敌对 `roi`。打开设置前若监控线程运行，先调用现有 `_stop_monitor()`。
+
+### 11.3 音效与校准
+
+- `tools/gen_sounds.py` 生成 44100 Hz / 16 bit / 单声道 WAV，不使用随机数或时间戳，重复执行输出一致。
+- `tools/drone_probe.py <目录>` 连续喂入无人机空闲 / 战斗 / 返回样例各 5 帧并输出 JSON，用于验收绿色行数、战斗迹象与红血条区分。
+- 新增测试覆盖检测器时序、一次性事件、配置规整、悬浮窗锁定与位置钳制、无人机设置窗口写回、主面板菜单同步及未启用无人机时不传配置。

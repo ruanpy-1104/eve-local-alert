@@ -30,6 +30,24 @@
     "cooldown_enabled": false,
     "cooldown_minutes": 5
   },
+  "drone": {
+    "enabled": false,
+    "count": 5,
+    "roi": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 0.0,
+      "height": 0.0
+    },
+    "idle_sound": "assets/drone_idle.wav",
+    "alert_sound": "assets/drone_alert.wav"
+  },
+  "overlay": {
+    "visible": false,
+    "locked": false,
+    "x": null,
+    "y": null
+  },
   "loop": {
     "fps": 6
   },

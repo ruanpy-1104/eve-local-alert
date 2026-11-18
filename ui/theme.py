@@ -95,6 +95,26 @@ QToolTip {{
     padding: 4px 8px;
 }}
 
+/* ---- 弹出菜单（悬浮窗按钮等） ---- */
+QMenu {{
+    background-color: {SURFACE};
+    color: {TEXT};
+    border: 1px solid {BORDER_STRONG};
+    border-radius: 8px;
+    padding: 6px;
+}}
+QMenu::item {{
+    padding: 7px 28px 7px 12px;
+    border-radius: 5px;
+}}
+QMenu::item:selected {{
+    background-color: {SURFACE_HOVER};
+}}
+QMenu::indicator {{
+    width: 14px;
+    height: 14px;
+}}
+
 /* ---- 按钮（默认=次要；role=primary/danger/ghost 变体） ---- */
 QPushButton {{
     background-color: {SURFACE};

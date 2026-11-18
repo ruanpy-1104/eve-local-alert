@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -38,6 +39,7 @@ from core.capture import Capture, client_size
 from core.colors import COLOR_ORDER, DEFAULT_ALERT_COLORS, EVE_COLORS
 from core.config import ConfigManager
 from core.detector import Detector
+from core.drone import DroneDetector, DroneState
 from core.logger import get_logger
 from core.notifier import (
     SERVERCHAN_REGISTER_URL,
@@ -47,8 +49,11 @@ from core.notifier import (
 )
 from core.paths import assets_dir
 from core.region_selector import ROI
+from core.sounds import SoundPlayer
 from core.window_locator import WindowInfo, WindowLocator, is_minimized
 from ui import theme
+from ui.drone_dialog import DroneDialog
+from ui.overlay import FlightStatusOverlay
 from ui.preview import PreviewWidget
 from ui.window_picker import TargetPickerDialog
 
@@ -59,6 +64,9 @@ SELECTION_INTERVAL_MS = 150  # 框选模式下全窗口预览刷新间隔
 
 # 识别程度档位 -> 描述文案（三档 0/50/100）
 _STRICT_LEVELS = {0: "宽松", 50: "适中", 100: "严格"}
+
+# Python 拥有的无父顶层 QWidget 由模块级列表保活到进程退出，避免重复释放。
+_OVERLAY_KEEPALIVE: list = []
 
 
 class _StrictScale(QWidget):
@@ -116,6 +124,9 @@ class MonitorWorker(QThread):
     alert_paused = Signal(bool)  # 播报暂停状态：True=已暂停，False=达最短时长且目标不在视野后自动恢复
     window_lost = Signal(str)    # 目标窗口已关闭：监控结束，面板退回未选择状态
     window_minimized = Signal()  # 目标窗口已最小化：提醒玩家恢复窗口
+    flight_state = Signal(str)   # 纯状态键：monitoring/hostile/safe/paused/minimized/lost/idle
+    drone_idle = Signal()        # 无人机全部空闲的一次性「叮咚」边沿
+    drone_damaged = Signal(bool)  # 红色血条进入 / 退出（连续帧确认）
 
     def __init__(
         self,
@@ -123,12 +134,14 @@ class MonitorWorker(QThread):
         root_dir: Path,
         parent=None,
         target_handle: int | None = None,
+        drone_config: dict | None = None,
     ):
         super().__init__(parent)
         self._config = config
         self._root = root_dir
         # 用户点选的目标窗口句柄：只跟踪这个窗口，窗口关闭即结束监控（见 WindowLocator）
         self._target_handle = target_handle
+        self._drone_config = drone_config
         self._stop = threading.Event()
         self._paused = threading.Event()  # 播报暂停：命中不报警，达最短时长且目标不在视野后自动恢复
         self._alerting = False  # 当前是否正在播放警报（供 UI 线程只读查询）
@@ -136,6 +149,29 @@ class MonitorWorker(QThread):
         self._paused_since: float | None = None  # 暂停开始时刻（最短持续时长计时起点）
         self._last_hit = False  # 最近一帧命中状态（供顶部状态栏即时刷新）
         self._last_fps = 0.0  # 最近一次状态栏 FPS（供顶部状态栏即时刷新）
+        self._flight_state = ""
+        self._drone_damaged_active = False
+
+    def _emit_flight_state(self, state: str) -> None:
+        """只在纯状态变化时发信号，避免 UI 重复刷新。"""
+        if state == self._flight_state:
+            return
+        self._flight_state = state
+        self.flight_state.emit(state)
+
+    def _set_drone_damaged(self, damaged: bool) -> None:
+        """把连续帧确认后的血条状态转换为进入 / 退出边沿。"""
+        if damaged == self._drone_damaged_active:
+            return
+        self._drone_damaged_active = damaged
+        self.drone_damaged.emit(damaged)
+
+    def _handle_drone_state(
+        self, detector: DroneDetector, state: DroneState
+    ) -> None:
+        if state.idle_chime:
+            self.drone_idle.emit()
+        self._set_drone_damaged(detector.damage_confirmed())
 
     def _status_text(self, fps: float, hit: bool) -> str:
         """监控状态栏富文本。
@@ -163,6 +199,12 @@ class MonitorWorker(QThread):
         才看到状态变化。
         """
         self.status.emit(self._status_text(self._last_fps, self._last_hit))
+        if self._paused.is_set():
+            self._emit_flight_state("paused")
+        elif self._last_hit:
+            self._emit_flight_state("hostile")
+        elif self._flight_state:
+            self._emit_flight_state("safe")
 
     def _approx_fps(self, status_frames: int, last_status: float) -> float:
         """当前刷新窗口内的近似 FPS（状态切换时立即刷新状态栏用）。"""
@@ -190,11 +232,16 @@ class MonitorWorker(QThread):
     def _notify_window_lost(self) -> None:
         """目标窗口已关闭：置位标志并通知面板退回「未选择目标」状态。"""
         self._window_lost = True
+        self._set_drone_damaged(False)
+        self._emit_flight_state("lost")
         self.window_lost.emit("目标程序窗口已关闭，请重新选择目标程序")
 
     def run(self) -> None:
         try:
             self._loop()
+            if not self._window_lost:
+                self._set_drone_damaged(False)
+                self._emit_flight_state("idle")
             # 仅自然结束时覆盖状态；手动停止 / 目标窗口关闭由面板自行设置后续状态，
             # 避免竞态覆盖。
             if not self._stop.is_set() and not self._window_lost:
@@ -220,6 +267,12 @@ class MonitorWorker(QThread):
 
         capture = Capture()
         detector: Detector | None = None
+        drone_cfg = dict(self._drone_config or {})
+        drone_detector = (
+            DroneDetector(count=drone_cfg.get("count", 5))
+            if drone_cfg.get("enabled")
+            else None
+        )
         det_cfg_key: str | None = None
         frame_count = 0
         last_status = time.perf_counter()
@@ -232,6 +285,7 @@ class MonitorWorker(QThread):
             except RuntimeError:
                 self._notify_window_lost()
                 return
+            self._emit_flight_state("monitoring")
             while not self._stop.is_set():
                 started = time.perf_counter()
 
@@ -262,6 +316,8 @@ class MonitorWorker(QThread):
                     if self._alerting:
                         self._alerting = False
                         alerter.stop()
+                    self._set_drone_damaged(False)
+                    self._emit_flight_state("minimized")
                     if not minimized_reported:
                         minimized_reported = True
                         self.window_minimized.emit()  # 提示音 + 面板置顶，提醒玩家恢复窗口
@@ -273,7 +329,32 @@ class MonitorWorker(QThread):
 
                 roi = ROI(**cfg["roi"])
                 region = roi.to_capture_region(0, 0, cw, ch)
-                frame = capture.grab_window(win.handle, region)
+                if drone_detector is None:
+                    # 无人机关闭时继续走原有单 ROI 路径，行为与旧版完全一致。
+                    frame = capture.grab_window(win.handle, region)
+                else:
+                    regions = [region]
+                    drone_region: dict[str, int] | None = None
+                    try:
+                        drone_roi = ROI(**drone_cfg["roi"])
+                        candidate = drone_roi.to_capture_region(0, 0, cw, ch)
+                        if candidate["width"] > 0 and candidate["height"] > 0:
+                            drone_region = candidate
+                            regions.append(candidate)
+                    except (KeyError, TypeError, ValueError):
+                        drone_region = None
+                    try:
+                        grabbed = capture.grab_regions(win.handle, regions)
+                    except Exception:
+                        logger.debug("无人机/敌对区域共享抓屏失败", exc_info=True)
+                        grabbed = [None] * len(regions)
+                    frame = grabbed[0] if grabbed else None
+                    if drone_region is not None and len(grabbed) > 1:
+                        drone_state = drone_detector.update(grabbed[1])
+                        self._handle_drone_state(drone_detector, drone_state)
+                    else:
+                        drone_detector.update(None)
+                        self._set_drone_damaged(False)
                 if frame is None or frame.size == 0:
                     # 捕获失败（异常状态）：跳过本帧，不中断监控
                     time.sleep(interval)
@@ -285,6 +366,9 @@ class MonitorWorker(QThread):
                 hit = detector.detect(frame)
                 self._last_hit = hit  # 供状态栏「敌袭/安全/已暂停」实时指示
                 if hit:
+                    self._emit_flight_state(
+                        "paused" if self._paused.is_set() else "hostile"
+                    )
                     if not self._alerting and not self._paused.is_set():
                         self._alerting = True
                         alerter.start()
@@ -299,6 +383,9 @@ class MonitorWorker(QThread):
                         self._alerting = False
                         alerter.stop()
                 else:
+                    self._emit_flight_state(
+                        "paused" if self._paused.is_set() else "safe"
+                    )
                     # 敌方消失（本帧未命中）：上报给远程提醒模块，作为再次触发的前提条件
                     mark_enemy_gone()
                     if self._alerting:
@@ -318,6 +405,7 @@ class MonitorWorker(QThread):
                             self._paused_since = None
                             self._paused.clear()
                             self.alert_paused.emit(False)
+                            self._emit_flight_state("safe")
 
                 # 预览叠加检测框，实时反馈识别结果（绿框 = 检测到目标颜色）
                 vis = frame
@@ -340,6 +428,7 @@ class MonitorWorker(QThread):
                 time.sleep(max(0.0, interval - elapsed))
         finally:
             alerter.stop()  # 确保退出监控时停止警报
+            self._set_drone_damaged(False)
             capture.close()
 
 
@@ -995,6 +1084,16 @@ class ControlPanel(QWidget):
         self._root = assets_dir()  # 资源根目录：开发期为项目根，打包后为 PyInstaller 解包目录
         self._worker: MonitorWorker | None = None
         self._preview_dialog: PreviewDialog | None = None
+        self._drone_dialog: DroneDialog | None = None
+        self._overlay: FlightStatusOverlay | None = None
+        self._closing = False
+        self._flight_state = "idle"
+        drone_cfg = self.config.data.get("drone") or {}
+        self._drone_sound = SoundPlayer(
+            self._root,
+            drone_cfg.get("idle_sound", "assets/drone_idle.wav"),
+            drone_cfg.get("alert_sound", "assets/drone_alert.wav"),
+        )
 
         # 框选会话状态（在预览画面内完成区域选择）
         self._sel_target: WindowInfo | None = None
@@ -1016,10 +1115,11 @@ class ControlPanel(QWidget):
         self.setWindowTitle("EVE Local Alert")
         self.setWindowIcon(self._app_icon())
         # 注意：面板不做置顶，不改变其他窗口的 Z 序或前台状态，避免影响其他应用操作。
-        # 最小宽度须容纳次要功能行（5 个 96px 按钮 + GitHub 图标 + 间距），否则布局挤压重叠
-        self.setMinimumSize(600, 460)
-        self.resize(600, 520)
+        # 最小宽度容纳 7 个次要功能按钮 + GitHub 图标，避免挤压重叠。
+        self.setMinimumSize(760, 460)
+        self.resize(760, 520)
         self._build_ui()
+        self._setup_overlay()
         self._update_preview_button()
         self._update_remote_button()
 
@@ -1082,6 +1182,10 @@ class ControlPanel(QWidget):
         self.remote_btn.setToolTip(
             "开启后，警报触发时通过 Server酱 向你的微信推送提醒（默认关闭）"
         )
+        self.drone_btn = QPushButton("无人机")
+        self.drone_btn.setToolTip("设置无人机监控区域、空闲提示与被攻击报警")
+        self.overlay_btn = QPushButton("悬浮窗")
+        self.overlay_btn.setToolTip("显示、锁定或重置置顶飞行状态悬浮窗")
         # 次要功能统一固定宽度，左侧紧凑排布，避免按钮撑满整行
         for btn in (
             self.color_btn,
@@ -1089,9 +1193,11 @@ class ControlPanel(QWidget):
             self.test_btn,
             self.pause_settings_btn,
             self.remote_btn,
+            self.drone_btn,
+            self.overlay_btn,
         ):
             btn.setMinimumHeight(38)
-            btn.setFixedWidth(96)
+            btn.setFixedWidth(88)
             tool_row.addWidget(btn)
         # 与 GitHub 图标之间留出弹性空白（≥ 一个按钮宽度），方便后续追加新功能按钮
         tool_row.addStretch(1)
@@ -1114,6 +1220,121 @@ class ControlPanel(QWidget):
         self.test_btn.clicked.connect(self._test_alert)
         self.pause_settings_btn.clicked.connect(self._open_pause_settings)
         self.remote_btn.clicked.connect(self._open_remote_alert)
+        self.drone_btn.clicked.connect(self._open_drone_dialog)
+
+        self.overlay_menu = QMenu(self.overlay_btn)
+        self.overlay_show_action = self.overlay_menu.addAction("显示悬浮窗")
+        self.overlay_show_action.setCheckable(True)
+        self.overlay_lock_action = self.overlay_menu.addAction("锁定位置（鼠标穿透）")
+        self.overlay_lock_action.setCheckable(True)
+        self.overlay_reset_action = self.overlay_menu.addAction("重置位置")
+        self.overlay_btn.setMenu(self.overlay_menu)
+        self.overlay_show_action.toggled.connect(
+            self._on_overlay_visibility_toggled
+        )
+        self.overlay_lock_action.toggled.connect(self._on_overlay_lock_toggled)
+        self.overlay_reset_action.triggered.connect(self._reset_overlay_position)
+
+    # ---- 悬浮窗 ----
+    def _setup_overlay(self) -> None:
+        """按持久化配置恢复悬浮窗；未要求显示时保持懒创建。"""
+        self._overlay = None
+        overlay_cfg = self.config.data.get("overlay") or {}
+        if bool(overlay_cfg.get("visible", False)):
+            self._ensure_overlay().show()
+        self._sync_overlay_menu()
+
+    def _ensure_overlay(self) -> FlightStatusOverlay:
+        """懒创建悬浮窗并恢复配置，创建后由模块级列表保活。"""
+        if self._overlay is not None:
+            return self._overlay
+        overlay = FlightStatusOverlay(None)
+        _OVERLAY_KEEPALIVE.append(overlay)
+        self._overlay = overlay
+        overlay_cfg = self.config.data.get("overlay") or {}
+        overlay.set_locked(bool(overlay_cfg.get("locked", False)))
+        x, y = overlay_cfg.get("x"), overlay_cfg.get("y")
+        if isinstance(x, int) and isinstance(y, int):
+            overlay.apply_position(x, y)
+        else:
+            overlay.reset_position()
+        overlay.set_state(self._flight_state)
+        overlay.closed_by_user.connect(self._on_overlay_closed)
+        overlay.lock_toggled.connect(self._on_overlay_lock_changed)
+        overlay.position_changed.connect(self._on_overlay_position_changed)
+        return overlay
+
+    def _sync_overlay_menu(self) -> None:
+        if self._overlay is None:
+            overlay_cfg = self.config.data.get("overlay") or {}
+            visible = bool(overlay_cfg.get("visible", False))
+            locked = bool(overlay_cfg.get("locked", False))
+        else:
+            visible = self._overlay.isVisible()
+            locked = self._overlay.is_locked()
+        for action, checked in (
+            (self.overlay_show_action, visible),
+            (self.overlay_lock_action, locked),
+        ):
+            action.blockSignals(True)
+            action.setChecked(checked)
+            action.blockSignals(False)
+
+    def _save_overlay(self) -> None:
+        if self._overlay is None:
+            return
+        self.config.update(
+            "overlay",
+            {
+                "visible": self._overlay.isVisible(),
+                "locked": self._overlay.is_locked(),
+                "x": self._overlay.x(),
+                "y": self._overlay.y(),
+            },
+        )
+
+    def _on_overlay_visibility_toggled(self, visible: bool) -> None:
+        if visible:
+            overlay = self._ensure_overlay()
+            overlay.set_state(self._flight_state)
+            overlay.show()
+            overlay.raise_()
+        elif self._overlay is not None:
+            self._overlay.hide()
+        self._sync_overlay_menu()
+        self._save_overlay()
+
+    def _on_overlay_lock_toggled(self, locked: bool) -> None:
+        self._ensure_overlay().set_locked(locked)
+        self._sync_overlay_menu()
+        self._save_overlay()
+
+    def _on_overlay_lock_changed(self, locked: bool) -> None:
+        self.overlay_lock_action.blockSignals(True)
+        self.overlay_lock_action.setChecked(locked)
+        self.overlay_lock_action.blockSignals(False)
+        self._save_overlay()
+
+    def _on_overlay_closed(self) -> None:
+        self._sync_overlay_menu()
+        if not self._closing:
+            self._save_overlay()
+
+    def _on_overlay_position_changed(self, x: int, y: int) -> None:
+        self._sync_overlay_menu()
+        self._save_overlay()
+
+    def _reset_overlay_position(self) -> None:
+        if self._overlay is None:
+            return
+        self._overlay.reset_position()
+        self._sync_overlay_menu()
+        self._save_overlay()
+
+    def _on_flight_state(self, state: str) -> None:
+        self._flight_state = state
+        if self._overlay is not None:
+            self._overlay.set_state(state)
 
     def _proportional_height(self) -> int:
         """按监控程序宽高比计算目标高度：控件高 + 预览(窗口宽 - 边距)/程序比例。"""
@@ -1171,6 +1392,7 @@ class ControlPanel(QWidget):
 
         :param cancelled_message: 用户取消选择时的提示文案（默认通用文案）。
         """
+        self._close_drone_dialog()
         prefer = None
         try:
             prefer = self._make_locator().find().handle
@@ -1237,6 +1459,7 @@ class ControlPanel(QWidget):
     # ---- 预览内框选区域 ----
     def _start_selection(self) -> None:
         """进入框选模式：预览显示目标窗口全画面，拖拽框选监控区域。"""
+        self._close_drone_dialog()
         if self._worker_running():
             self._stop_monitor()  # 避免监控预览覆盖框选画面
         if self._worker_running():
@@ -1352,6 +1575,13 @@ class ControlPanel(QWidget):
         """监控线程是否仍在运行（含「已请求停止但尚未退出」的收尾阶段）。"""
         return self._worker is not None and self._worker.isRunning()
 
+    def _close_drone_dialog(self) -> None:
+        """关闭非模态无人机设置窗口，避免与监控 / 框选并行抓屏。"""
+        dialog = self._drone_dialog
+        self._drone_dialog = None
+        if dialog is not None:
+            dialog.close()
+
     def _toggle_monitor(self) -> None:
         if self._worker_running():
             self._stop_monitor()
@@ -1366,6 +1596,7 @@ class ControlPanel(QWidget):
         用户框好监控区域后再点一次「开始预警」才真正开始——避免「点开始预警 →
         弹窗选程序 → 选完立刻开跑」导致用户来不及框选区域。
         """
+        self._close_drone_dialog()
         # 上一轮线程可能仍在退出（采集卡住时 wait 会超时）：此时不新建，避免两个
         # 工作线程同时抓屏、同时写预览与状态栏
         if self._worker_running():
@@ -1394,8 +1625,17 @@ class ControlPanel(QWidget):
             return
         self._set_program_aspect(cw, ch)
         # 通过窗口内容捕获（PrintWindow）监控所选窗口，不改变窗口 Z 序 / 前台状态。
+        self._drone_sound.stop_alert()
+        drone_cfg = self.config.data.get("drone") or {}
+        worker_kwargs: dict = {}
+        if bool(drone_cfg.get("enabled", False)):
+            worker_kwargs["drone_config"] = dict(drone_cfg)
         self._worker = MonitorWorker(
-            self.config, self._root, self, target_handle=self._target_handle
+            self.config,
+            self._root,
+            self,
+            target_handle=self._target_handle,
+            **worker_kwargs,
         )
         self._worker.preview.connect(self._on_preview)
         self._worker.status.connect(self.status_label.setText)
@@ -1403,6 +1643,15 @@ class ControlPanel(QWidget):
         self._worker.alert_paused.connect(self._on_alert_paused)
         self._worker.window_lost.connect(self._on_window_lost)
         self._worker.window_minimized.connect(self._on_window_minimized)
+        flight_signal = getattr(self._worker, "flight_state", None)
+        if flight_signal is not None:
+            flight_signal.connect(self._on_flight_state)
+        idle_signal = getattr(self._worker, "drone_idle", None)
+        if idle_signal is not None:
+            idle_signal.connect(self._drone_sound.play_idle)
+        damaged_signal = getattr(self._worker, "drone_damaged", None)
+        if damaged_signal is not None:
+            damaged_signal.connect(self._on_drone_damaged)
         self._worker.start()
         self.start_btn.setText("停止预警")
         # 每次启动监控重置播报暂停状态
@@ -1415,6 +1664,7 @@ class ControlPanel(QWidget):
 
     def _stop_monitor(self) -> None:
         """停止监控线程并复位按钮；线程未在超时内退出时保留引用等待其自行结束。"""
+        self._drone_sound.stop_alert()
         worker = self._worker
         if worker is not None:
             worker.stop()
@@ -1427,6 +1677,13 @@ class ControlPanel(QWidget):
         self.start_btn.setText("开始预警")
         self.pause_btn.setEnabled(False)
         self.status_label.setText("已停止预警")
+        self._on_flight_state("idle")
+
+    def _on_drone_damaged(self, damaged: bool) -> None:
+        if damaged:
+            self._drone_sound.start_alert()
+        else:
+            self._drone_sound.stop_alert()
 
     def _on_preview(self, frame) -> None:
         if frame is None:
@@ -1437,16 +1694,20 @@ class ControlPanel(QWidget):
 
     def _on_error(self, message: str) -> None:
         logger.error("监控出错：%s", message)
+        self._drone_sound.stop_alert()
         self.status_label.setStyleSheet(
             f"color:{theme.WARN};font-weight:bold;font-size:13px;"
         )
         self.status_label.setText(f"错误：{message}")
         self.start_btn.setText("开始预警")
         self.pause_btn.setEnabled(False)
+        self._on_flight_state("idle")
 
     def _on_window_lost(self, message: str) -> None:
         """目标窗口已关闭：退回「未选择目标」界面，引导用户重新选择程序后开始预警。"""
         logger.warning("监控目标窗口已关闭：%s", message)
+        self._drone_sound.stop_alert()
+        self._on_flight_state("lost")
         self.status_label.setStyleSheet("")
         self.status_label.setText("目标程序窗口已关闭，请点击「选择程序」重新选择，再点击「开始预警」")
         self.preview.clear()
@@ -1460,6 +1721,8 @@ class ControlPanel(QWidget):
 
     def _on_window_minimized(self) -> None:
         """目标窗口最小化：播放提示音并置顶面板提醒玩家（不抢键盘焦点，不提示窗口关闭）。"""
+        self._drone_sound.stop_alert()
+        self._on_flight_state("minimized")
         try:
             winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
         except Exception:
@@ -1493,6 +1756,39 @@ class ControlPanel(QWidget):
             self.status_label.setText("目标不在视野，预警已自动恢复")
 
     # ---- 颜色选择 / 预览 ----
+    def _open_drone_dialog(self) -> None:
+        """停止当前监控并打开无人机独立设置窗口。"""
+        if self._preview_dialog is not None:
+            self._preview_dialog.close()
+        if self._worker_running():
+            self._stop_monitor()
+        if self._worker_running():
+            self.status_label.setText("正在停止上一轮监控，请稍候再设置无人机")
+            return
+
+        if not self._has_target:
+            self._select_target(
+                "未选择目标程序，无人机监控未打开：请先选择要监控的窗口"
+            )
+            if not self._has_target:
+                return
+        # 选择程序流程会顺带进入敌对 ROI 框选；无人机窗口使用自己的整窗预览。
+        self._end_selection()
+        win = self._ensure_target()
+        if win is None:
+            return
+        self.status_label.setText("已停止预警，正在设置无人机监控")
+        if self._drone_dialog is not None:
+            self._drone_dialog.close()
+        self._drone_dialog = DroneDialog(
+            self.config,
+            self._root,
+            self,
+            target_handle=self._target_handle,
+        )
+        self._drone_dialog.show()
+        self._drone_dialog.raise_()
+
     def _open_color_picker(self) -> None:
         dialog = ColorPickerDialog(self.config, self)
         dialog.exec()
@@ -1536,6 +1832,7 @@ class ControlPanel(QWidget):
 
     def _open_preview(self) -> None:
         """打开独立预览窗口：显示框选监控区域画面与识别信息。"""
+        self._close_drone_dialog()
         if self._preview_dialog is None:
             self._preview_dialog = PreviewDialog(
                 self.config, self._root, self, target_handle=self._target_handle
@@ -1570,10 +1867,30 @@ class ControlPanel(QWidget):
         )
 
     def closeEvent(self, event) -> None:
+        self._closing = True
         self._end_selection()
+        self._save_overlay()
+        if self._overlay is not None:
+            for signal, slot in (
+                (self._overlay.closed_by_user, self._on_overlay_closed),
+                (self._overlay.lock_toggled, self._on_overlay_lock_changed),
+                (
+                    self._overlay.position_changed,
+                    self._on_overlay_position_changed,
+                ),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except Exception:
+                    pass
+            self._overlay.hide()
+        if self._drone_dialog is not None:
+            self._drone_dialog.close()
+            self._drone_dialog = None
         if self._preview_dialog is not None:
             self._preview_dialog.close()
         if self._worker_running():
             self._worker.stop()
             self._worker.wait(2000)
+        self._drone_sound.close()
         super().closeEvent(event)

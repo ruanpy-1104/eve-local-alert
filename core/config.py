@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "loop": {"fps": 6},
     "logging": {"level": "error", "file": "logs/eve-alert.log"},
+    "drone": {
+        "enabled": False,
+        "count": 5,
+        "roi": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
+        "idle_sound": "assets/drone_idle.wav",
+        "alert_sound": "assets/drone_alert.wav",
+    },
+    "overlay": {"visible": False, "locked": False, "x": None, "y": None},
 }
 
 # 旧版 config.json 中已废弃的检测字段（文字条形检测遗留），加载时自动剔除，避免传入 Detector 报错
@@ -55,6 +64,7 @@ _OBSOLETE_DETECTION_KEYS = ("min_area", "min_aspect_ratio")
 # 旧版遗留的 25/75 归档到最近三档；已在三档范围内的取值（0/50/100）原样保留——
 # 若对用户在三档下保存的 50（适中）重复归并，重启后会被误改成 0，破坏「记忆上次设置」。
 _VALID_STRICTNESS = (0, 50, 100)
+_EMPTY_ROI = {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0}
 
 
 def _migrate_strictness(value: object) -> object:
@@ -90,6 +100,92 @@ def _normalize_colors(value: object) -> list[str]:
     return kept or list(DEFAULT_ALERT_COLORS)
 
 
+def _normalize_count(value: object) -> int:
+    """把无人机数量收敛到 1–5；非法值回退默认 5。"""
+    if isinstance(value, bool):
+        return 5
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 5
+    return max(1, min(5, count))
+
+
+def _normalize_drone_roi(value: object) -> dict[str, float]:
+    """规整无人机 ROI；任一字段非法或越界即视为未框选。"""
+    if not isinstance(value, dict):
+        return dict(_EMPTY_ROI)
+    numbers: list[float] = []
+    for key in ("x", "y", "width", "height"):
+        item = value.get(key)
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return dict(_EMPTY_ROI)
+        number = float(item)
+        if not math.isfinite(number):
+            return dict(_EMPTY_ROI)
+        numbers.append(number)
+    x, y, width, height = numbers
+    if (
+        x < 0.0
+        or y < 0.0
+        or width <= 0.0
+        or height <= 0.0
+        or x + width > 1.0 + 1e-9
+        or y + height > 1.0 + 1e-9
+    ):
+        return dict(_EMPTY_ROI)
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def _normalize_drone(drone: object) -> dict[str, Any]:
+    """补全并规整 drone 配置，不改变其它配置节。"""
+    current = drone if isinstance(drone, dict) else {}
+    enabled = current.get("enabled", False)
+    idle_sound = current.get("idle_sound", DEFAULT_CONFIG["drone"]["idle_sound"])
+    alert_sound = current.get("alert_sound", DEFAULT_CONFIG["drone"]["alert_sound"])
+    return {
+        "enabled": enabled if isinstance(enabled, bool) else False,
+        "count": _normalize_count(current.get("count", 5)),
+        "roi": _normalize_drone_roi(current.get("roi")),
+        "idle_sound": (
+            idle_sound
+            if isinstance(idle_sound, str) and idle_sound
+            else DEFAULT_CONFIG["drone"]["idle_sound"]
+        ),
+        "alert_sound": (
+            alert_sound
+            if isinstance(alert_sound, str) and alert_sound
+            else DEFAULT_CONFIG["drone"]["alert_sound"]
+        ),
+    }
+
+
+def _normalize_overlay(overlay: object) -> dict[str, Any]:
+    """规整悬浮窗持久化字段；坐标只接受整数或 null。"""
+    current = overlay if isinstance(overlay, dict) else {}
+
+    def _coordinate(key: str) -> int | None:
+        value = current.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
+
+    visible = current.get("visible", False)
+    locked = current.get("locked", False)
+    return {
+        "visible": visible if isinstance(visible, bool) else False,
+        "locked": locked if isinstance(locked, bool) else False,
+        "x": _coordinate("x"),
+        "y": _coordinate("y"),
+    }
+
+
+def _normalize_extended_sections(data: dict[str, Any]) -> None:
+    """统一补齐 v1.2 新增配置，兼容缺节与旧类型数据。"""
+    data["drone"] = _normalize_drone(data.get("drone"))
+    data["overlay"] = _normalize_overlay(data.get("overlay"))
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """深度合并：override 覆盖 base；双方共有的 dict 递归合并。"""
     result = copy.deepcopy(base)
@@ -110,7 +206,9 @@ class ConfigManager:
 
     def _load(self) -> dict:
         if not self.path.exists():
-            return copy.deepcopy(DEFAULT_CONFIG)
+            data = copy.deepcopy(DEFAULT_CONFIG)
+            _normalize_extended_sections(data)
+            return data
         try:
             with open(self.path, encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -134,6 +232,7 @@ class ConfigManager:
         # 其余选项保留用户最后一次修改——避免用户忘记关闭导致意外联网推送。
         if isinstance(data.get("remote_alert"), dict):
             data["remote_alert"]["enabled"] = False
+        _normalize_extended_sections(data)
         return data
 
     def save(self) -> None:

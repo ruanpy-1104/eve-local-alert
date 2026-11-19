@@ -8,6 +8,14 @@ from core.capture import PW_RENDERFULLCONTENT, Capture
 from core.drone import DroneDetector
 
 
+class _Clock:
+    def __init__(self, now: float = 0.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
 def _blank(height: int = 240, width: int = 220) -> np.ndarray:
     return np.full((height, width, 3), (24, 20, 18), dtype=np.uint8)
 
@@ -65,60 +73,106 @@ def test_all_idle_requires_configured_count_and_confirm_frames():
 def test_combat_while_all_idle_never_chimes():
     frame = _idle_frame(3)
     cv2.rectangle(frame, (20, 100), (55, 117), (0, 0, 255), -1)
-    detector = DroneDetector(count=3, confirm_frames=3)
+    clock = _Clock()
+    detector = DroneDetector(count=3, confirm_frames=3, clock=clock)
     states = [detector.update(frame) for _ in range(10)]
+    clock.now = 10.0
+    states.extend(detector.update(frame) for _ in range(2))
     assert all(state.all_idle for state in states[2:])
     assert all(state.combat for state in states)
     assert sum(state.idle_chime for state in states) == 0
 
 
 def test_starting_idle_never_chimes_without_combat():
-    detector = DroneDetector(count=5, confirm_frames=3)
+    clock = _Clock()
+    detector = DroneDetector(count=5, confirm_frames=3, clock=clock)
     states = [detector.update(_idle_frame()) for _ in range(10)]
+    clock.now = 10.0
+    states.append(detector.update(_idle_frame()))
     assert all(state.all_idle for state in states[2:])
     assert not any(state.idle_chime for state in states)
 
 
 def test_combat_then_idle_chimes_exactly_once():
-    detector = DroneDetector(count=5, confirm_frames=3)
+    clock = _Clock()
+    detector = DroneDetector(count=5, confirm_frames=3, clock=clock)
     assert detector.update(_combat_frame()).combat is True
-    states = [detector.update(_idle_frame()) for _ in range(6)]
-    assert [state.idle_chime for state in states] == [
-        False,
-        False,
-        True,
-        False,
-        False,
-        False,
-    ]
+    states = [detector.update(_idle_frame()) for _ in range(3)]
+    assert not any(state.idle_chime for state in states)
+    clock.now = 2.9
+    assert detector.update(_idle_frame()).idle_chime is False
+    clock.now = 3.0
+    assert detector.update(_idle_frame()).idle_chime is True
+    clock.now = 3.1
+    assert detector.update(_idle_frame()).idle_chime is False
 
 
 def test_return_only_then_idle_does_not_chime():
-    detector = DroneDetector(count=5, confirm_frames=3)
+    clock = _Clock()
+    detector = DroneDetector(count=5, confirm_frames=3, clock=clock)
     returned = _blank()
     _add_return_rows(returned, 5)
     for _ in range(4):
         assert detector.update(returned).idle_chime is False
-    assert not any(detector.update(_idle_frame()).idle_chime for _ in range(5))
+    states = [detector.update(_idle_frame()) for _ in range(3)]
+    clock.now = 10.0
+    states.append(detector.update(_idle_frame()))
+    assert not any(state.idle_chime for state in states)
 
 
 def test_combat_return_idle_chimes():
-    detector = DroneDetector(count=5, confirm_frames=3)
+    clock = _Clock()
+    detector = DroneDetector(count=5, confirm_frames=3, clock=clock)
     detector.update(_combat_frame())
     returned = _blank()
     _add_return_rows(returned, 5)
     for _ in range(3):
         assert detector.update(returned).idle_chime is False
-    states = [detector.update(_idle_frame()) for _ in range(3)]
-    assert states[-1].idle_chime is True
+    for _ in range(3):
+        assert detector.update(_idle_frame()).idle_chime is False
+    clock.now = 3.0
+    assert detector.update(_idle_frame()).idle_chime is True
 
 
 def test_damaged_then_idle_chimes_after_confirmation():
-    detector = DroneDetector(count=5, confirm_frames=3, damage_frames=2)
+    clock = _Clock()
+    detector = DroneDetector(
+        count=5, confirm_frames=3, damage_frames=2, clock=clock
+    )
     detector.update(_damaged_frame())
     assert detector.update(_damaged_frame()).damaged is True
-    states = [detector.update(_idle_frame()) for _ in range(3)]
-    assert states[-1].idle_chime is True
+    for _ in range(3):
+        assert detector.update(_idle_frame()).idle_chime is False
+    clock.now = 2.9
+    assert detector.update(_idle_frame()).idle_chime is False
+    clock.now = 3.0
+    assert detector.update(_idle_frame()).idle_chime is True
+
+
+def test_idle_timer_resets_after_non_idle_combat_or_damage():
+    returned = _blank()
+    _add_return_rows(returned, 5)
+    for interrupt in (returned, _combat_frame(), _damaged_frame()):
+        clock = _Clock()
+        detector = DroneDetector(count=5, confirm_frames=3, clock=clock)
+        detector.update(_combat_frame())
+        for _ in range(3):
+            detector.update(_idle_frame())
+        clock.now = 2.9
+        assert detector.update(_idle_frame()).idle_chime is False
+
+        detector.update(interrupt)
+        assert detector._all_idle_since is None
+        clock.now = 3.0
+        for _ in range(3):
+            assert detector.update(_idle_frame()).idle_chime is False
+        assert detector._all_idle_since == 3.0
+        clock.now = 5.9
+        assert detector.update(_idle_frame()).idle_chime is False
+        clock.now = 6.0
+        assert detector.update(_idle_frame()).idle_chime is True
+        clock.now = 6.1
+        assert detector.update(_idle_frame()).idle_chime is False
 
 
 def test_red_bar_and_red_text_are_distinguished():
@@ -136,7 +190,12 @@ def test_red_bar_and_red_text_are_distinguished():
 
 
 def test_invalid_frames_are_safe():
-    detector = DroneDetector()
+    clock = _Clock()
+    detector = DroneDetector(clock=clock)
+    detector.update(_combat_frame())
+    for _ in range(3):
+        detector.update(_idle_frame())
+    assert detector._all_idle_since == 0.0
     for frame in (None, np.empty((0, 0, 3), dtype=np.uint8), np.zeros((2, 2, 3), dtype=np.uint8)):
         state = detector.update(frame)
         assert state.idle_count == 0
@@ -144,6 +203,10 @@ def test_invalid_frames_are_safe():
         assert state.damaged is False
         assert state.all_idle is False
         assert state.idle_chime is False
+        assert detector._all_idle_since is None
+    detector._all_idle_since = 1.0
+    detector.reset()
+    assert detector._all_idle_since is None
 
 
 def test_grab_regions_retries_flags_zero_then_crops_same_frame():

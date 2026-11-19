@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import cv2
@@ -21,13 +22,19 @@ class DroneState:
 
 
 _EMPTY_STATE = DroneState(0, False, False, False, False)
+IDLE_ALERT_DELAY_SECONDS = 3.0
 
 
 class DroneDetector:
     """带时序确认与一次性「叮咚」事件的无人机检测器。"""
 
     def __init__(
-        self, count: int = 5, confirm_frames: int = 3, damage_frames: int = 2
+        self,
+        count: int = 5,
+        confirm_frames: int = 3,
+        damage_frames: int = 2,
+        idle_delay_seconds: float = IDLE_ALERT_DELAY_SECONDS,
+        clock=None,
     ):
         try:
             self.count = max(1, min(5, int(count)))
@@ -41,6 +48,11 @@ class DroneDetector:
             self.damage_frames = max(1, int(damage_frames))
         except (TypeError, ValueError, OverflowError):
             self.damage_frames = 2
+        try:
+            self.idle_delay_seconds = max(0.0, float(idle_delay_seconds))
+        except (TypeError, ValueError, OverflowError):
+            self.idle_delay_seconds = IDLE_ALERT_DELAY_SECONDS
+        self._clock = clock or time.monotonic
         self.reset()
 
     def reset(self) -> None:
@@ -48,7 +60,7 @@ class DroneDetector:
         self._idle_streak = 0
         self._damage_streak = 0
         self._combat_seen = False
-        self._prev_all_idle = False
+        self._all_idle_since: float | None = None
 
     def damage_confirmed(self) -> bool:
         """当前红色血条是否已达到连续帧确认；供报警边沿使用。"""
@@ -60,7 +72,7 @@ class DroneDetector:
         if analysis is None:
             self._idle_streak = 0
             self._damage_streak = 0
-            self._prev_all_idle = False
+            self._all_idle_since = None
             return _EMPTY_STATE
 
         idle_count, combat, damaged = analysis
@@ -79,17 +91,20 @@ class DroneDetector:
             self._combat_seen = True
 
         all_idle = self._idle_streak >= self.confirm_frames
-        idle_chime = (
-            all_idle
-            and not self._prev_all_idle
-            and self._combat_seen
-            and not combat
-            and not damaged
-        )
-        if idle_chime:
-            # 一次性事件：发出后清除战斗记录，持续空闲不会重复响。
-            self._combat_seen = False
-        self._prev_all_idle = all_idle
+        idle_chime = False
+        if not all_idle or combat or damaged:
+            self._all_idle_since = None
+        else:
+            now = self._clock()
+            if self._all_idle_since is None:
+                self._all_idle_since = now
+            if (
+                self._combat_seen
+                and now - self._all_idle_since >= self.idle_delay_seconds
+            ):
+                idle_chime = True
+                # 一次性事件：发出后清除战斗记录，持续空闲不会重复响。
+                self._combat_seen = False
 
         return DroneState(
             idle_count=idle_count,

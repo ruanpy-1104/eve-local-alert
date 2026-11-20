@@ -35,7 +35,7 @@ logger = get_logger(__name__)
 # Server酱 推送接口（sendkey 即鉴权凭证）
 SERVERCHAN_API_URL = "https://sctapi.ftqq.com/{key}.send"
 # Server酱 注册 / 登录页（推广计划链接），供 UI 引导首次使用的用户获取 SendKey
-SERVERCHAN_REGISTER_URL = "https://sct.ftqq.com/r/3353"
+SERVERCHAN_REGISTER_URL = "https://sct.ftqq.com/r/25928"
 
 # 短超时：远程提醒是尽力而为的增强功能，不能拖慢监控循环
 _HTTP_TIMEOUT_SECONDS = 5

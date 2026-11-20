@@ -270,7 +270,7 @@ class Alerter:
 
 ```python
 SERVERCHAN_API_URL: str       # "https://sctapi.ftqq.com/{key}.send"
-SERVERCHAN_REGISTER_URL: str  # Server酱 注册页（UI 引导入口，含推广计划链接）
+SERVERCHAN_REGISTER_URL: str  # "https://sct.ftqq.com/r/25928"（UI 注册入口）
 
 def send_serverchan(sendkey: str, title: str, desp: str = "") -> tuple[bool, str]: ...
                               # 同步发送一条 Server酱 消息（urllib POST，5s 超时），返回 (成功, 描述)
@@ -287,6 +287,7 @@ def send_alert_async(remote_cfg: dict) -> None: ...
 - **内置双条件冷却**：再次发送必须**同时满足**——① 距上次**推送消息** ≥ 5 秒（从发起推送时刻起算，非敌方消失时刻；模块级状态，仅程序运行期间有效，发送失败同样计入，避免失败重试轰炸）；② 敌方已消失（调用方在每个未命中帧调用 `mark_enemy_gone()` 上报，幂等）。
 - **用户冷却独立优先**：`cooldown_enabled` 开启时**先判定**用户配置的 `cooldown_minutes`（默认 5 分钟），其次才判定内置双条件；两者互不影响，用户等待时间不会被内置 5 秒缩短或延长。
 - **尽力而为**：短超时 + daemon 线程，发送失败不影响本地警报音，也不阻塞监控循环。
+- **注册入口**：远程预警对话框在 SendKey 输入框同行提供「获取 SendKey」按钮；按钮始终可见，点击通过 `QDesktopServices.openUrl(QUrl(SERVERCHAN_REGISTER_URL))` 打开 Server酱 注册页。
 
 ### 3.9 logger（日志）
 

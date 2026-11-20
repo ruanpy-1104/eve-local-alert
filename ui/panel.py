@@ -696,7 +696,7 @@ class RemoteAlertDialog(QDialog):
     """远程预警设置：Server酱 微信推送。
 
     默认关闭；开启后警报触发时向用户自己的微信推送一条提醒。
-    首次使用（开启时尚未填写 SendKey）显示引导步骤与 Server酱 注册入口。
+    首次使用（开启时尚未填写 SendKey）显示引导步骤，注册入口始终显示。
     """
 
     def __init__(self, config: ConfigManager, parent=None):
@@ -729,24 +729,13 @@ class RemoteAlertDialog(QDialog):
         # ---- 首次使用引导（开启且未填 SendKey 时显示） ----
         self.guide_label = QLabel(
             "首次使用：\n"
-            "1. 登录 Server酱（微信扫码即可）\n"
+            "1. 点击下方「获取 SendKey」打开 Server酱 注册页（微信扫码即可）\n"
             "2. 在「SendKey」页面复制你的 Key（SCT 开头）\n"
             "3. 粘贴到下方输入框，微信将收到一条关注绑定消息"
         )
         self.guide_label.setObjectName("descriptionLabel")
         self.guide_label.setWordWrap(True)
         root.addWidget(self.guide_label)
-
-        register_row = QHBoxLayout()
-        self.register_btn = QPushButton("打开 Server酱 注册页面")
-        self.register_btn.setToolTip(SERVERCHAN_REGISTER_URL)
-        self.register_btn.setCursor(Qt.PointingHandCursor)
-        self.register_btn.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(SERVERCHAN_REGISTER_URL))
-        )
-        register_row.addWidget(self.register_btn)
-        register_row.addStretch()
-        root.addLayout(register_row)
 
         # ---- SendKey ----
         key_row = QHBoxLayout()
@@ -756,8 +745,15 @@ class RemoteAlertDialog(QDialog):
         self.sendkey_edit = QLineEdit()
         self.sendkey_edit.setPlaceholderText("粘贴 SCT 开头的 SendKey")
         self.sendkey_edit.textChanged.connect(self._update_state)
+        self.register_btn = QPushButton("获取 SendKey")
+        self.register_btn.setToolTip(SERVERCHAN_REGISTER_URL)
+        self.register_btn.setCursor(Qt.PointingHandCursor)
+        self.register_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(SERVERCHAN_REGISTER_URL))
+        )
         key_row.addWidget(key_lbl)
         key_row.addWidget(self.sendkey_edit, stretch=1)
+        key_row.addWidget(self.register_btn)
         root.addLayout(key_row)
 
         # ---- 测试通知 ----
@@ -821,12 +817,11 @@ class RemoteAlertDialog(QDialog):
         self._update_state()
 
     def _update_state(self) -> None:
-        """开关 / SendKey / 冷却变化时刷新引导显隐、测试与应用按钮可用性。"""
+        """开关 / SendKey / 冷却变化时刷新引导、测试与应用状态。"""
         enabled = self.enable_check.isChecked()
         has_key = bool(self._sendkey())
         # 首次使用引导：开启但还没填 SendKey
         self.guide_label.setVisible(enabled and not has_key)
-        self.register_btn.setVisible(enabled and not has_key)
         self.test_btn.setEnabled(has_key)
         self.cooldown_spin.setEnabled(self.cooldown_check.isChecked())
         if not has_key:

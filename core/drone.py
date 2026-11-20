@@ -58,20 +58,20 @@ class DroneDetector:
     def reset(self) -> None:
         """清除连续帧计数、战斗锁存与一次性事件。"""
         self._idle_streak = 0
-        self._damage_streak = 0
+        self._alarm_streak = 0
         self._combat_seen = False
         self._all_idle_since: float | None = None
 
-    def damage_confirmed(self) -> bool:
-        """当前红色血条是否已达到连续帧确认；供报警边沿使用。"""
-        return self._damage_streak >= self.damage_frames
+    def damage_alarm_active(self) -> bool:
+        """「战斗中 + 红血条」是否已达到连续帧确认；供报警边沿使用。"""
+        return self._alarm_streak >= self.damage_frames
 
     def update(self, frame_bgr: np.ndarray | None) -> DroneState:
         """分析一帧并返回纯状态；非法输入安静返回全 False。"""
         analysis = self._analyze(frame_bgr)
         if analysis is None:
             self._idle_streak = 0
-            self._damage_streak = 0
+            self._alarm_streak = 0
             self._all_idle_since = None
             return _EMPTY_STATE
 
@@ -82,10 +82,10 @@ class DroneDetector:
             # 空闲行数一旦掉下去，立即退出「全部空闲」。
             self._idle_streak = 0
 
-        if damaged:
-            self._damage_streak += 1
+        if combat and damaged:
+            self._alarm_streak += 1
         else:
-            self._damage_streak = 0
+            self._alarm_streak = 0
 
         if combat or damaged:
             self._combat_seen = True

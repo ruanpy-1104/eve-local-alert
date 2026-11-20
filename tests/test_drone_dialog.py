@@ -9,11 +9,12 @@ import numpy as np
 from PySide6.QtCore import QObject, QRect
 
 from core.config import ConfigManager
+from core.drone import DroneDetector, DroneState
 from core.sounds import SoundPlayer
 from core.window_locator import WindowInfo
 from ui import panel as panel_module
 from ui.drone_dialog import DroneDialog
-from ui.panel import ControlPanel
+from ui.panel import ControlPanel, MonitorWorker
 
 
 class _ClosedCapture:
@@ -137,6 +138,32 @@ def test_alert_loop_count_uses_plain_integers(monkeypatch, tmp_path):
     assert effect.loop_counts == [-2, 1]
     assert effect.stops == 1
     assert effect.plays == 2
+
+
+def test_monitor_worker_mutes_drone_chime_while_paused(app, tmp_path):
+    config = ConfigManager(tmp_path / "config.json")
+    worker = MonitorWorker(config, tmp_path)
+    emitted: list[bool] = []
+    worker.drone_idle.connect(lambda: emitted.append(True))
+    detector = DroneDetector()
+    state = DroneState(
+        idle_count=5,
+        combat=False,
+        damaged=False,
+        all_idle=True,
+        idle_chime=True,
+    )
+
+    worker._paused.set()
+    worker._handle_drone_state(detector, state)
+    app.processEvents()
+    assert emitted == []
+
+    worker._paused.clear()
+    worker._handle_drone_state(detector, state)
+    app.processEvents()
+    assert emitted == [True]
+    worker.deleteLater()
 
 
 def test_drone_dialog_selection_only_writes_drone_roi(app, tmp_path, monkeypatch):

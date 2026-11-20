@@ -169,9 +169,9 @@ class MonitorWorker(QThread):
     def _handle_drone_state(
         self, detector: DroneDetector, state: DroneState
     ) -> None:
-        if state.idle_chime:
+        if state.idle_chime and not self._paused.is_set():
             self.drone_idle.emit()
-        self._set_drone_damaged(detector.damage_confirmed())
+        self._set_drone_damaged(detector.damage_alarm_active())
 
     def _status_text(self, fps: float, hit: bool) -> str:
         """监控状态栏富文本。

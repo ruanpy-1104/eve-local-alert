@@ -46,6 +46,13 @@ def _combat_frame() -> np.ndarray:
 
 def _damaged_frame() -> np.ndarray:
     frame = _blank()
+    cv2.rectangle(frame, (20, 40), (55, 57), (0, 0, 255), -1)
+    cv2.rectangle(frame, (100, 40), (139, 44), (0, 0, 255), -1)
+    return frame
+
+
+def _red_bar_only_frame() -> np.ndarray:
+    frame = _blank()
     cv2.rectangle(frame, (100, 40), (139, 44), (0, 0, 255), -1)
     return frame
 
@@ -179,14 +186,35 @@ def test_red_bar_and_red_text_are_distinguished():
     detector = DroneDetector(count=5, confirm_frames=3, damage_frames=2)
     first = detector.update(_damaged_frame())
     assert first.damaged is True
-    assert detector.damage_confirmed() is False
+    assert detector.damage_alarm_active() is False
     second = detector.update(_damaged_frame())
     assert second.damaged is True
-    assert detector.damage_confirmed() is True
+    assert detector.damage_alarm_active() is True
 
     text_state = detector.update(_combat_frame())
     assert text_state.combat is True
     assert text_state.damaged is False
+    assert detector.damage_alarm_active() is False
+
+
+def test_red_bar_without_combat_never_activates_alarm():
+    detector = DroneDetector(count=5, confirm_frames=3, damage_frames=2)
+    states = [detector.update(_red_bar_only_frame()) for _ in range(5)]
+    assert all(state.damaged for state in states)
+    assert all(not state.combat for state in states)
+    assert detector.damage_alarm_active() is False
+
+
+def test_damage_alarm_stops_when_combat_ends_even_if_bar_stays_red():
+    detector = DroneDetector(count=5, confirm_frames=3, damage_frames=2)
+    detector.update(_damaged_frame())
+    assert detector.update(_damaged_frame()).damaged is True
+    assert detector.damage_alarm_active() is True
+
+    state = detector.update(_red_bar_only_frame())
+    assert state.damaged is True
+    assert state.combat is False
+    assert detector.damage_alarm_active() is False
 
 
 def test_invalid_frames_are_safe():

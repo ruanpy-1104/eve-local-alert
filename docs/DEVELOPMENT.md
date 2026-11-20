@@ -499,8 +499,8 @@ nuitka --standalone --enable-plugin=pyside6 --windows-console-mode=disable `
 ### 11.2 接口与线程边界
 
 - `Capture.grab_regions(hwnd, regions)` 返回与 `regions` 等长的裁剪帧列表；优先一次整窗 PrintWindow，渲染失败后逐区域 mss 回退。
-- `DroneDetector.update(frame_bgr)` 返回 `DroneState`，内部维护空闲确认、血条连续帧和战斗锁存；战斗后全部空闲需持续满内置 `IDLE_ALERT_DELAY_SECONDS = 3.0` 秒且无战斗、无红血条才发出 `idle_chime`，中途中断会重新计时。该延迟不暴露为配置项；`update(None)` 与极小 / 空帧安全返回 false 状态。
-- `MonitorWorker` 新增 `flight_state(str)`、`drone_idle()`、`drone_damaged(bool)`。`flight_state` 只发状态键，悬浮窗不解析富文本。
+- `DroneDetector.update(frame_bgr)` 返回 `DroneState`，内部维护空闲确认、`combat && damaged` 报警连续帧和战斗锁存；战斗后全部空闲需持续满内置 `IDLE_ALERT_DELAY_SECONDS = 3.0` 秒且无战斗、无红血条才发出 `idle_chime`，中途中断会重新计时。该延迟不暴露为配置项；`update(None)` 与极小 / 空帧安全返回 false 状态。
+- `MonitorWorker` 新增 `flight_state(str)`、`drone_idle()`、`drone_damaged(bool)`。`idle_chime` 事件始终由检测器消费，但暂停期间不发 `drone_idle`，恢复后不补响；`drone_damaged` 由 `damage_alarm_active()` 驱动，只在「战斗中 + 红血条」连续 2 帧后进入，脱离战斗状态立即退出。`flight_state` 只发状态键，悬浮窗不解析富文本。
 - `SoundPlayer` 由主面板在 GUI 线程持有；禁止在监控线程直接创建 QtMultimedia 对象。offscreen 或没有 `QCoreApplication` 时所有播放方法静默返回。
 - `DroneDialog` 的框选只更新 `drone.roi`，不修改敌对 `roi`。打开设置前若监控线程运行，先调用现有 `_stop_monitor()`。
 

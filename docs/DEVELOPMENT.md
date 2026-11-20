@@ -42,6 +42,31 @@ python main.py
 | psutil | 由 PID 反查进程名 | 定位窗口用 |
 | PySide6 | 控制面板、预览、目标选择对话框 | UI 层 |
 
+### 1.4 常用检测命令
+
+```powershell
+./.venv/Scripts/python.exe -m pytest -q
+./.venv/Scripts/python.exe tools/detector_probe.py 样例
+```
+
+`detector_probe.py` 会对下列 13 张样例连续喂入 3 帧，并检查最终报警结果；`白色明亮背景.png` 另要求至少检出 5 个敌对方格。
+
+| 样例 | 预期报警 | 主要覆盖 |
+| --- | --- | --- |
+| `红名.png` | 是 | 敌对多色网格 |
+| `白名.png` | 是 | 白方格分类 |
+| `白色明亮背景.png` | 是（敌对框 ≥ 5） | 白图标比亮背景更暗 |
+| `所有可能的方块及内部图标.png` | 是 | 中心图形无关 |
+| `蓝色紫色列表.png` | 否 | 友军只建网 |
+| `列表尺寸放大.png` | 否 | 缩放与固定网格 |
+| `列表尺寸缩小.png` | 否 | 缩放与固定网格 |
+| `空间站红灯列表.png` | 否 | 实测红灯误报回归 |
+| `太空中列表.png` | 否 | 实测太空列表误报回归 |
+| `一行自己的情况.png` | 否 | 单行/空槽 fail-safe |
+| `空间站环境.png` | 否 | 半透明背景 |
+| `空间站环境2.png` | 否 | 半透明背景 |
+| `太空中的空间站.png` | 否 | 大背景干扰 |
+
 ---
 
 ## 2. 配置说明（config.json）
@@ -95,9 +120,9 @@ python main.py
 | `roi.x` / `roi.y` | float | 0.10 / 0.10 | ROI 左上角归一化坐标（0–1，以客户区为基准）。 |
 | `roi.width` / `roi.height` | float | 0.30 / 0.40 | ROI 宽高归一化比例。 |
 | `detection.confirm_frames` | int | 3 | 连续命中帧数（时序确认）。 |
-| `detection.downscale` | int | 2 | 下采样倍数（1 为不缩放）。 |
+| `detection.downscale` | int | 2 | 兼容保留，已忽略。检测器始终使用输入 ROI 的 1× 分辨率，也不再缩放 `last_boxes` 坐标。 |
 | `detection.colors` | string[] | 红 / 橙 / 黄 / 灰白 | 启用的警报颜色键（见 `core/colors.py` 的 `EVE_COLORS`，共 4 种）。加载时剔除已移除 / 未知的颜色键并去重；剔除后为空则回退默认四色。 |
-| `detection.strictness` | int | 50 | 识别程度三档：0（宽松）/ 50（适中）/ 100（严格），只调节饱和度 / 明度门槛（色相窗口固定，见 §7）。首次使用（无历史设置）默认 50（适中），应用保存后按用户记忆值持久化；旧版五档遗留值（25/75 等）加载时自动归档到最近三档（25→0、75→50），三档取值原样保留（不二次迁移）。 |
+| `detection.strictness` | int | 50 | 识别程度三档：0（宽松）/ 50（适中）/ 100（严格），作用于方格形状、局部对比度和颜色容忍度（见 §3.6、§7）。首次使用默认 50，应用保存后按用户记忆值持久化；旧版五档遗留值（25/75 等）加载时自动归档到最近三档（25→0、75→50）。 |
 | `alert.sound_file` | string | `"assets/alert.wav"` | 警报音相对项目根路径；缺失时回退系统蜂鸣。 |
 | `alert.resume_delay` | int | `10` | 暂停预警的最短持续时长（秒）：暂停至少持续该时长，且目标不在视野时才自动恢复；0 表示黑屏即恢复。 |
 | `remote_alert.enabled` | bool | `false` | 远程预警开关（Server酱 微信推送）。**每次启动强制重置为 `false`**（见 `core/config.py` 的 `_load`），其余选项保留用户最后一次修改；关闭时不产生任何网络请求。面板「远程预警」按钮按此值切换样式：开启时套用与「开始预警」相同的主行动样式（`role=primary`）作状态提示，关闭时恢复普通次要样式（`_update_remote_button()`，动态属性变更后 unpolish/polish 刷新 QSS）。 |
@@ -108,7 +133,7 @@ python main.py
 | `logging.level` | string | `"error"` | 日志级别：debug / info / warning / error / critical。 |
 | `logging.file` | string | `"logs/eve-alert.log"` | 日志文件相对路径（相对数据目录 `app_dir()`；开发期为项目根，打包后为 `%APPDATA%\eve-alert`）。 |
 
-> 注意：图标的面积 / 长宽比 / 填充率等几何约束由 `Detector` 内部随下采样比例自适应，不再暴露为配置项；`confirm_frames` 与 `downscale` 仍为配置项。旧版 config.json 中的 `min_area` / `min_aspect_ratio` 会在加载时被自动剔除。
+> 注意：方格尺寸、长宽比、外框/四角/面一致性与网格参数由 `Detector` 内部按 1× 图像计算，不暴露为配置项。`confirm_frames` 仍有效；`downscale` 只用于兼容旧配置，实际被忽略。旧版配置中的 `min_area` / `min_aspect_ratio` 等多余字段会在加载时自动剔除。
 
 ---
 
@@ -130,7 +155,8 @@ class ConfigManager:
 ### 3.2 colors（颜色预设）
 
 ```python
-EVE_COLORS: dict[str, dict]          # 4 种颜色：label / rgb / h_ranges / achromatic
+EVE_COLORS: dict[str, dict]          # UI/警报 4 色：label / rgb / h_ranges / achromatic
+CLASSIFIER_COLORS: dict[str, dict]   # 完整分类色：敌对 4 色 + 友军 blue / green / purple
 COLOR_ORDER: tuple[str, ...]         # UI 展示顺序
 DEFAULT_ALERT_COLORS: list[str]      # 默认启用：red / orange / yellow / gray_white
 DEFAULT_STRICTNESS: int              # 默认识别程度 50
@@ -140,6 +166,7 @@ def color_ranges(name: str, strictness: float = 0.5) -> list[tuple[tuple, tuple]
 ```
 
 - 保留的 4 种预设取自「样例/总览可选颜色.png」实测采样：红 (191,0,0) / 橙 (255,89,0) / 黄 (255,178,0) / 灰白 (178,178,178)。
+- `CLASSIFIER_COLORS` 额外定义蓝 / 绿 / 紫三种友军色，只用于方格分类和网格建立；它们不会出现在 UI 警报颜色中，也不进入 `last_boxes`。
 - **色相窗口按相邻预设的中点固定划分、两两不相交**：红 `0–5 ∪ 175–179`（跨色相环 0 点，拆两段）、橙 `6–15`、黄 `16–26`；灰白用明度区间描述。这样勾「橙」不会连带命中「黄」（三色暖色在 H 上只相距 10~11）。
 - `color_ranges` 返回指定颜色在给定严格度（0 宽松 ~ 1 严格）下的 HSV 阈值区间列表；**严格度只抬高饱和度 / 明度下限**，不收窄色相窗口（实测总览红图标 H≈1.5–3.4，收窄会在严格档造成漏报）；未知颜色（含已移除的旧颜色键）返回空列表。
 
@@ -199,25 +226,30 @@ class ROI:
 
 ```python
 class Detector:
-    def __init__(self, confirm_frames=3, downscale=2, colors=None, strictness=50,
-                 min_area=None, max_area=None, min_aspect=0.7, max_aspect=1.6,
-                 min_fill=0.70, achromatic_fill=0.82, gray_v_max=200.0,
-                 need_name=True, name_v=90): ...
+    def __init__(self, confirm_frames=3, downscale=2, colors=None,
+                 strictness=50, **legacy): ...
     def reset(self) -> None: ...
-    def red_mask(self, frame_bgr: np.ndarray) -> np.ndarray: ...          # 颜色掩码（下采样空间）
-    def red_boxes(self, frame_bgr: np.ndarray) -> list[tuple[int,int,int,int]]: ...  # 图标候选外接矩形
-    def has_red(self, frame_bgr: np.ndarray) -> bool: ...                 # 单帧判定（无时序确认）
-    def detect(self, frame_bgr: np.ndarray) -> bool: ...                  # 带时序确认
+    def red_mask(self, frame_bgr: np.ndarray) -> np.ndarray: ...
+    def red_boxes(self, frame_bgr: np.ndarray) -> list[tuple[int, int, int, int]]: ...
+    def has_red(self, frame_bgr: np.ndarray) -> bool: ...
+    def detect(self, frame_bgr: np.ndarray) -> bool: ...
+
+last_boxes: list[tuple[int, int, int, int]]       # 当前接受方格中的敌对框
+last_all_boxes: list[tuple[int, int, int, int]]   # 当前接受方格，含友军
+last_grid: dict | None                            # x / size / pitch / rows / phase
 ```
 
-- 检测对象是玩家名字**前方**的**实心小图标**（近正方形），而非文字条形；游戏内可自定义字体 / 图标大小，故判定**不依赖固定像素**。
-- 面积阈值随帧比例自适应：下限仅剔除噪点级小色块（取固定极小面积与帧面积 0.05% 二者较小值）、上限按帧面积留余量（铺满多数区域的整块底色除外）。`min_area` / `max_area` 显式给出时覆盖自动值。
-- `min_aspect` / `max_aspect`（0.7–1.6）约束「近方形」；**填充率按颜色类别区别对待**：彩色图标下采样后填充率降至 0.7–0.8，用常规 `min_fill`（≥0.70）；名字文字是白色/灰白、只会污染「灰白」掩码，故灰白用更高 `achromatic_fill`（≥0.82）把碎笔画文字剔除，实心方块图标（fill≥0.9）仍命中。
-- **灰白「灰而非白」判定**：灰白检测额外检查每个色块的**平均明度**（`gray_v_max`，默认 200）：平均 V 超过阈值判为白色（名字文字、图标里的纯白高光）而剔除。中立灰图标实测平均 V≈107–138、调色板灰白色为 178，都落在阈值内；纯白（V≈255）才被剔除——上限取 200 是为了覆盖调色板自身的灰白，同时仍能挡住近纯白色块（白名字文字另有填充率 / 行首判据兜底）。
-- **灰白「行首图标」判定**：名字文字是一串，每个字**同行左侧**必有前一个字或图标；真正的阵营图标位于行首、左侧空白。`_candidate_boxes` 对灰白检测启用 `left_clear=True`，用 `_has_left_content` 检查色块同行左侧是否已有同色内容，有则判为名字文字剔除，进一步抑制极小字体名字形成的紧凑色块而不影响行首图标。
-- `need_name`：两级自适应名字验证。若帧内存在某图标带「对齐的明亮名字文字」（V ≥ `name_v`），则只保留此类图标，剔除背景中颜色相近但非玩家条目的干扰（如红色恒星）；若整帧都没有名字（纯图标 ROI），则退化为仅凭几何判定，无名字参考也能识别。带宽 / 带高随图标尺寸缩放以匹配对齐。
-- **彩色与灰白分开建掩码检测**（`_mask_for` 按颜色子集建掩码、`_candidate_boxes` 按指定填充率筛块），两组结果按颜色互斥直接拼接，避免不同填充率互相干扰。
-- `detect` 传入后维护**同一位置**的连续命中计数：把本帧候选框与上一帧 `_prev_boxes` 做位置匹配（`_overlaps_previous`，中心偏移不超过框尺寸 75% 视为同一位置）。首帧命中或同一位置延续则计数 +1；未命中或位置跳变（总览滚动、不同位置轮流出现的噪声）则重置。连续 `confirm_frames` 帧同一位置命中才返回 True（默认 3 帧，@6fps≈0.5s）；同时把候选框乘以下采样比例写回 `last_boxes`（原分辨率）供预览叠加——极小帧（不足 2×downscale）跳过 resize 时实际未下采样，此时不缩放。
+- 构造函数保持旧调用兼容：接受 `confirm_frames`、`downscale`、`colors`、`strictness` 以及 `**legacy` 旧字段；`strictness` 钳制到 0–100，`colors` 只筛出四个敌对键。`downscale` 仅保存字段值，任何流程都不缩放图像。
+- 检测单位是玩家名字前的阵营方格，不是颜色块或名字条。名字、文字宽度、中心星形/十字/横杆/圆点/六边形/空白均不参与判断。
+- 公开结果是当前帧已接受的方格：`last_boxes` 只含已启用敌对色，`last_all_boxes` 还含蓝/绿/紫友军；`last_grid` 提供网格 `x/size/pitch/rows/phase`。`red_mask` 返回与输入同尺寸掩码，只在 `last_boxes` 对应位置填充 255。
+- `red_boxes` 与 `has_red` 重新执行单帧分析，不带跨帧确认；`detect` 执行分析并更新位置 + 颜色轨迹。重置后网格、轨迹与三个公开结果字段全部清空。
+- 内部流程：
+  - `_foreground_masks`：计算局部灰度差、Lab 色差、饱和度、Canny 边缘与自适应暗面种子；
+  - `_extract_candidates`：从轮廓产生近方形候选，校验尺寸、轴对齐、外框、四角、非中心面一致性和局部对比度；
+  - `_classify`：只采样外环/四角，输出红/橙/黄/灰白、蓝/绿/紫或 unknown；
+  - `_fit_grid` / `_lock_or_keep_grid`：按 x 聚类、基础行距和相位锁定至少两行网格，滚动时更新相位；网格外候选丢弃；
+  - `_complete_grid_slots`：只在已接受首末行之间补低对比白格，且要求局部暗面与颜色一致；
+  - `detect`：无网格时只允许恰好一个高置信方格；当前帧无敌对立即 False，否则按位置量子 + 颜色维护 `confirm_frames` 轨迹。
 
 ### 3.7 alerter（警报）
 
@@ -307,62 +339,44 @@ loop until stop_requested:
 ### 5.2 目标识别（单帧）
 
 ```text
-function red_mask(frame_bgr):
-    if downscale > 1: frame_bgr = resize(frame_bgr, 1/downscale)
-    hsv = cvtColor(frame_bgr, BGR2HSV)
-    mask = 空掩码
-    for (low, high) in color_ranges(每启用颜色, strictness):
-        mask |= inRange(hsv, low, high)
-    mask = morphologyEx(mask, OPEN)              # 去孤立噪点（仅 1 倍下采样叠加）
-    return mask
+function analyze(frame_bgr):                       # 始终 1×，不读取 downscale 做缩放
+    foreground, lab, hsv, ... = _foreground_masks(frame_bgr)
+    candidates = _extract_candidates(foreground, lab, hsv)
+    accepted = _lock_or_keep_grid(candidates)      # 已有网格优先沿用并更新相位
 
-function red_boxes(frame_bgr):
-    gray = [c 属于 self.colors 且 is_achromatic(c)]        # 灰白
-    colored = [c 属于 self.colors 且 not is_achromatic(c)] # 红 / 橙 / 黄
-    boxes = []
-    if colored:
-        mask, v = _mask_for(frame_bgr, colored)           # 彩色掩码
-        boxes += _candidate_boxes(mask, v, min_fill=0.70)
-    if gray:
-        mask, v = _mask_for(frame_bgr, gray)              # 灰白掩码
-        boxes += _candidate_boxes(mask, v, min_fill=achromatic_fill=0.82)
-    return boxes                                           # 两组互斥，直接拼接
+    if accepted 为空 且 candidates 恰好 1 个:
+        if 该方格 score / 四角 / 面 / 对比度均达高置信门槛:
+            accepted = [该方格]                    # 单方形 fail-safe
+        else:
+            accepted = []
+    elif accepted 为空:
+        accepted = []                              # 多个不共线候选 → 不报警
 
-function _mask_for(frame_bgr, names):
-    if downscale > 1: frame_bgr = resize(frame_bgr, 1/downscale)
-    hsv = cvtColor(frame_bgr, BGR2HSV); mask = 空掩码
-    for name in names:
-        for (low, high) in color_ranges(name, strictness):
-            mask |= inRange(hsv, low, high)
-    mask = morphologyEx(mask, OPEN)                        # 去孤立噪点（仅 1 倍下采样叠加）
-    return mask, hsv[..., 2]                               # 同时返回明度 V 通道
+    accepted = _complete_grid_slots(accepted, lab, hsv)
+    last_all_boxes = accepted 的框                    # 含友军
+    last_boxes = accepted 中 color ∈ 敌对 4 色的框
+    last_grid = 当前网格参数或 None
+    return accepted
 
-function _candidate_boxes(mask, v_chan, min_fill):
-    lo, hi = area_bounds(frame_h, frame_w)                 # 自适应：下限剔除噪点、上限按帧面积留余量
-    candidates, named = [], []
-    for each component in connectedComponents(mask):
-        (x, y, w, h, a) = 组件统计
-        if a < lo 或 a > hi: continue
-        aspect = w / h
-        if aspect < min_aspect 或 aspect > max_aspect: continue
-        if a / (w * h) < min_fill: continue                # 彩色0.70 / 灰白0.82，剔除星形/圆/文字笔画
-        candidates.append((x, y, w, h))
-        if has_aligned_name(v_chan, x, y, w, h):           # 名字与其对齐（带宽随图标尺寸缩放）
-            named.append((x, y, w, h))
-    if not need_name: return candidates
-    return named if named else candidates                  # 帧内有名字→只用带名字的；纯图标→几何判定
+function _extract_candidates(...):
+    for contour in 彩色/对比/边缘/暗面轮廓:
+        if not 5–48 px 近方形 / 轴对齐 / 外框≥0.60 / 四角≥0.60 / 面一致:
+            continue
+        if 局部对比度不足:
+            continue
+        color = _classify(外环 + 四角中位颜色，跳过中心 50%)
+        保留 color ∈ {红,橙,黄,灰白,蓝,绿,紫}
 
 function detect(frame_bgr):
-    boxes = red_boxes(frame_bgr)
-    last_boxes = 各框 × 实际缩放比例（极小帧未下采样则不缩放）    # 原分辨率，供预览叠加
-    if boxes 为空:
-        计数清零；prev_boxes 清空；return False
-    if prev_boxes 非空 且 与 boxes 无「同一位置」重叠:
-        计数 = 1                                            # 位置跳变 → 作为新位置首帧
-    else:
-        计数 += 1                                           # 首帧命中 或 同一位置延续
-    prev_boxes = boxes
-    return 计数 >= confirm_frames                           # 默认 3 帧，@6fps≈0.5s
+    current = analyze(frame_bgr)
+    hostile = current 中 color ∈ 已启用敌对色
+    if hostile 为空:
+        tracks.clear()
+        return False
+    for square in hostile:
+        track = 上一帧同颜色、位置在容差内的轨迹
+        count = track.count + 1 if track else 1
+    return 任一 count >= confirm_frames              # 默认 3 帧
 ```
 
 ---
@@ -390,7 +404,7 @@ function detect(frame_bgr):
 取代早期「取样器 + 阈值滑动条」的校准器，改为**预设颜色勾选 + 识别程度滑块**，降低调参门槛：
 
 1. **色块勾选：** 展示 4 种 EVE 总览颜色色块（红 / 橙 / 黄 / 灰白，**一行等宽平铺**，色块上显示颜色名、勾选前缀 ✓），玩家多选需要警报的颜色，默认全部勾选。一个都不勾时拒绝应用并提示「请至少勾选一种颜色」（否则掩码恒为空、警报永不触发）。
-2. **识别程度滑块：** 0（宽松）~ 100（严格）的**固定档位 0 / 50 / 100**（拖动时自动吸附），**只调节饱和度 / 明度下限**（色相窗口固定划分，见 §3.2）。收到误报往严格调，漏报往宽松调；滑块首次使用默认停在 50（适中），应用保存后按 `detection.strictness` 记忆值恢复。
+2. **识别程度滑块：** 0（宽松）~ 100（严格）的**固定档位 0 / 50 / 100**（拖动时自动吸附），现在同步调节方格边缘/形状门槛、局部对比度、面一致性和颜色容忍度（见 §3.6）。收到误报往严格调，漏报往宽松调；滑块首次使用默认停在 50（适中），应用保存后按 `detection.strictness` 记忆值恢复。
 3. **应用：** 将 `detection.colors` 与 `detection.strictness` 写回 `config.json`，按钮行左侧短暂显示绿色「已应用」反馈（校验失败时为橙色提示）。
 
 > 布局：标题「警报颜色」「识别程度」作为**内容区块上方的纯文字标题**（无边框、位于区块外侧）；色块放在浅色卡片容器内（4 个色块单行等分）；识别程度为一行滑块（无卡片框，仅轨道填充有颜色，其余与对话背景一致）。颜色选择对话框不再内嵌实时预览：预览能力已移至主面板「预览」按钮的独立窗口（`PreviewDialog`），颜色选择只负责配置项。
@@ -409,7 +423,8 @@ function detect(frame_bgr):
 | `test_color_picker.py` | 颜色选择对话框（offscreen）：4 色块排版与勾选标记、应用写回、全不勾拒绝、默认全选 |
 | `test_panel_smoke.py` | 控制面板冒烟（offscreen）：界面可构建、未选目标时按钮置灰、停止无 worker 安全、进程名未知时写空串 |
 | `test_theme.py` | 主题 QSS 像素级校验（offscreen）：按钮获得焦点后不残留蓝色外框、主行动按钮自身蓝底不受影响 |
-| `test_detector.py` | 纯色正负样本、`red_boxes` 过滤、`detect` 时序确认边界 |
+| `test_detector.py` | 敌对/友军颜色分类、白图标暗于亮背景、中心图形无关、方格尺寸、圆灯/横条/空心过滤、单帧 fail-safe、位置 + 颜色时序、`downscale` 兼容、各公开结果字段 |
+| `test_detector_grid.py` | 至少两行锁定、x 列/行距/相位、滚动相位、网格外干扰丢弃、空槽不补、白格只在首末行之间补、友军建网、单方形边界与尺寸契约 |
 | `test_capture.py` | `_crop` 越界钳制、`client_size`、PrintWindow 失败回退 |
 | `test_pipeline.py` | 配置 → ROI → 捕获 → 检测 → 警报主链路 |
 | `test_preview.py` | 预览控件缩放与框选几何 |
@@ -417,6 +432,7 @@ function detect(frame_bgr):
 | `test_window_locator.py` | 窗口枚举 / 匹配优先级 / 最小化检测 |
 | `test_alerter.py` | start / stop / is_active 状态机 |
 | `test_notifier.py` | Server酱 请求构造 / 结果解析 / 失败与空 SendKey 短路 / 异步触发条件 |
+| `tools/detector_probe.py` | 13 张总览样例报警期望；白色明亮背景至少 5 个敌对框；输出 `last_boxes` / `last_all_boxes` / 网格 `rows,pitch,size` |
 
 运行：`python -m pytest`（配置见 `pytest.ini`）。
 
@@ -425,7 +441,7 @@ function detect(frame_bgr):
 ### 8.2 准确率与延迟基准
 
 - **准确率：** 录制若干段含 / 不含目标的 ROI 样本（截图序列），统计 TP/FP/FN，要求 ≥ 90%。
-- **延迟：** `time.perf_counter` 统计单帧各环节耗时，端到端 ≤ 100 ms（目标），≤ 300 ms（上限）。
+- **延迟：** `time.perf_counter` 统计单帧各环节耗时；81×921 ROI 单帧中位数约 13 ms，端到端 ≤ 100 ms（目标），≤ 300 ms（上限）。
 - **资源：** 任务管理器观测空闲 CPU 占用，应显著低于 1 个逻辑核心。
 
 ---

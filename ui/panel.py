@@ -1502,7 +1502,7 @@ class ControlPanel(QWidget):
         self._has_target = True
         self._update_preview_button()
         self.status_label.setText(
-            f"已选择目标：{win.title}，请在预览画面中框选监控区域，框选完成后点「开始预警」"
+            f"已选择目标：{win.title}，请在预览画面中框选图标列（只框方形图标即可，不必框名字；建议至少 2 行），框选完成后点「开始预警」"
         )
         return win
 
@@ -1540,7 +1540,9 @@ class ControlPanel(QWidget):
         self._sel_timer.start()
         self.preview.enable_selection(True)
         self.preview.setFocus()
-        self.status_label.setText("在预览画面中拖动鼠标框选监控区域，完成后点「开始预警」")
+        self.status_label.setText(
+            "在预览画面中拖动鼠标框选图标列（只框方形图标即可，不必框名字；建议至少 2 行），完成后点「开始预警」"
+        )
         self._sel_tick()
 
     def _sel_tick(self) -> None:

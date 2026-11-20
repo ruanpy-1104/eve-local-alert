@@ -726,11 +726,16 @@ class Detector:
             # 无网格时只允许一个且形状/对比度都明显强于普通候选的方格。
             if len(candidates) == 1:
                 candidate = candidates[0]
+                single_contrast_floor = (
+                    min(6.0, self._single_contrast_floor)
+                    if candidate.med_s < 70
+                    else self._single_contrast_floor
+                )
                 if (
                     candidate.score >= 0.72
                     and candidate.corner_fill >= 0.78
                     and candidate.face_fill >= 0.62
-                    and candidate.contrast >= self._single_contrast_floor
+                    and candidate.contrast >= single_contrast_floor
                 ):
                     accepted = candidates
 

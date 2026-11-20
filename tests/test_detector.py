@@ -161,6 +161,38 @@ class TestColorClassification:
 
 
 class TestWhiteOnBrightBackground:
+    @pytest.mark.parametrize("center", ["dot", "star"])
+    def test_single_low_contrast_white_square_on_v195(self, center):
+        frame = _frame(width=180, height=120, bg=(195, 195, 195))
+        _square(frame, (185, 185, 185), 60, 45, 15, center)
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert detector.last_boxes == [(60, 45, 15, 15)]
+        assert detector.last_grid is None
+
+    def test_single_low_contrast_white_square_on_v205_remains_detected(self):
+        frame = _frame(width=180, height=120, bg=(205, 205, 205))
+        _square(frame, (185, 185, 185), 60, 45, 15, "star")
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert len(detector.last_boxes) == 1
+        assert detector.last_grid is None
+
+    def test_single_square_threshold_does_not_accept_empty_gradient(self):
+        gradient = np.tile(
+            np.linspace(190, 200, 180, dtype=np.uint8),
+            (120, 1),
+        )
+        gradient = np.dstack((gradient, gradient, gradient))
+        detector = Detector()
+        assert not detector.has_red(gradient)
+        assert detector.last_boxes == []
+        assert detector.last_all_boxes == []
+
+    def test_colored_single_square_threshold_is_unchanged(self):
+        assert Detector().has_red(_one(RED, size=15, center="star"))
+        assert not Detector().has_red(_one(BLUE, size=15, center="star"))
+
     def test_low_contrast_white_square_uses_darkness_not_absolute_brightness(self):
         frame = _frame(width=220, height=160, bg=(205, 205, 205))
         _square(frame, (185, 185, 185), 80, 60, 15, "dot")

@@ -6,7 +6,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtCore import QObject, QRect
+from PySide6.QtCore import QObject, QRect, Signal
 
 from core.config import ConfigManager
 from core.drone import DroneDetector, DroneState
@@ -40,6 +40,7 @@ class _StubWorker(QObject):
     flight_state = _StubSignal()
     drone_idle = _StubSignal()
     drone_damaged = _StubSignal()
+    drone_status = _StubSignal()
 
     def __init__(self, *_args, **kwargs):
         super().__init__()
@@ -164,6 +165,94 @@ def test_monitor_worker_mutes_drone_chime_while_paused(app, tmp_path):
     app.processEvents()
     assert emitted == [True]
     worker.deleteLater()
+
+
+def test_monitor_worker_emits_drone_status_with_damage_priority(app, tmp_path):
+    config = ConfigManager(tmp_path / "config.json")
+    worker = MonitorWorker(config, tmp_path)
+    emitted: list[str] = []
+    worker.drone_status.connect(emitted.append)
+    detector = DroneDetector()
+    detector._alarm_streak = detector.damage_frames
+    state = DroneState(
+        idle_count=5,
+        combat=True,
+        damaged=True,
+        all_idle=True,
+        idle_chime=False,
+    )
+
+    worker._handle_drone_state(detector, state)
+    worker._handle_drone_state(detector, state)
+    app.processEvents()
+    assert emitted == ["damaged"]
+
+    detector._alarm_streak = 0
+    worker._handle_drone_state(
+        detector,
+        DroneState(5, False, False, True, False),
+    )
+    app.processEvents()
+    assert emitted == ["damaged", "idle"]
+    worker.deleteLater()
+
+
+def test_damaged_slot_ignores_stale_or_inactive_worker(app, tmp_path, monkeypatch):
+    panel = ControlPanel(tmp_path / "config.json")
+    starts: list[bool] = []
+    monkeypatch.setattr(
+        panel._drone_sound, "start_alert", lambda: starts.append(True)
+    )
+    try:
+        panel._monitoring_active = False
+        panel._on_drone_damaged(True)
+        assert starts == []
+
+        worker = MonitorWorker(panel.config, tmp_path, panel)
+        panel._worker = worker
+        panel._monitoring_active = True
+        worker.drone_damaged.connect(panel._on_drone_damaged)
+        worker.drone_damaged.emit(True)
+        app.processEvents()
+        assert starts == [True]
+        worker.deleteLater()
+    finally:
+        panel.close()
+
+
+def test_panel_drone_status_reaches_overlay_and_stop_clears_it(app, tmp_path):
+    panel = ControlPanel(tmp_path / "config.json")
+    try:
+        panel.overlay_show_action.setChecked(True)
+        app.processEvents()
+        overlay = panel._overlay
+        assert overlay is not None
+
+        worker = MonitorWorker(panel.config, tmp_path, panel)
+        panel._worker = worker
+        panel._monitoring_active = True
+        worker.drone_status.connect(panel._on_drone_status)
+        worker.drone_status.emit("idle")
+        app.processEvents()
+        assert overlay.drone_state_key() == "idle"
+
+        panel.overlay_show_action.setChecked(False)
+        worker.drone_status.emit("damaged")
+        app.processEvents()
+        assert overlay.isVisible() is False
+        assert panel._drone_state == "damaged"
+        panel.overlay_show_action.setChecked(True)
+        app.processEvents()
+        assert overlay.drone_state_key() == "damaged"
+
+        panel._stop_monitor()
+        app.processEvents()
+        assert panel._monitoring_active is False
+        assert panel._drone_state == ""
+        assert overlay.drone_state_key() == ""
+        worker.deleteLater()
+    finally:
+        panel.close()
 
 
 def test_drone_dialog_selection_only_writes_drone_roi(app, tmp_path, monkeypatch):

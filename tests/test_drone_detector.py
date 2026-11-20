@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+from pathlib import Path
 
 from core.capture import PW_RENDERFULLCONTENT, Capture
 from core.drone import DroneDetector
+
+ROOT = Path(__file__).resolve().parent.parent
+TEMPLATE_DIR = ROOT / "assets" / "drone_templates"
 
 
 class _Clock:
@@ -16,8 +20,54 @@ class _Clock:
         return self.now
 
 
-def _blank(height: int = 240, width: int = 220) -> np.ndarray:
+def _blank(height: int = 260, width: int = 320) -> np.ndarray:
     return np.full((height, width, 3), (24, 20, 18), dtype=np.uint8)
+
+
+def _template(name: str) -> np.ndarray:
+    encoded = np.fromfile(TEMPLATE_DIR / name, dtype=np.uint8)
+    image = cv2.imdecode(encoded, cv2.IMREAD_GRAYSCALE)
+    assert image is not None
+    return image
+
+
+def _add_drone_row(
+    frame: np.ndarray,
+    text: str,
+    row: int,
+    *,
+    scale: float = 1.0,
+    x: int = 40,
+    bar_color: tuple[int, int, int] = (235, 235, 235),
+    with_bar: bool = True,
+) -> None:
+    template = _template("idle.png" if text == "idle" else "combat.png")
+    text_height = max(1, int(round(template.shape[0] * scale)))
+    text_width = max(1, int(round(template.shape[1] * scale)))
+    resized = cv2.resize(
+        template, (text_width, text_height), interpolation=cv2.INTER_AREA
+    )
+    y = 8 + row * max(26, text_height + 10)
+    color = (0, 210, 20) if text == "idle" else (0, 0, 255)
+    region = frame[y : y + text_height, x : x + text_width]
+    region[resized > 0] = color
+    if not with_bar:
+        return
+
+    bar_width = max(8, int(round(40 * scale)))
+    bar_height = max(2, int(round(5 * scale)))
+    gap = max(2, int(round(5 * scale)))
+    bar_x = 150
+    bar_y = y + (text_height - bar_height) // 2
+    for index in range(3):
+        left = bar_x + index * (bar_width + gap)
+        cv2.rectangle(
+            frame,
+            (left, bar_y),
+            (left + bar_width - 1, bar_y + bar_height - 1),
+            bar_color,
+            -1,
+        )
 
 
 def _add_idle_rows(frame: np.ndarray, count: int, start_y: int = 8) -> None:
@@ -34,26 +84,26 @@ def _add_return_rows(frame: np.ndarray, count: int, start_y: int = 8) -> None:
 
 def _idle_frame(count: int = 5) -> np.ndarray:
     frame = _blank()
-    _add_idle_rows(frame, count)
+    for row in range(count):
+        _add_drone_row(frame, "idle", row)
     return frame
 
 
 def _combat_frame() -> np.ndarray:
     frame = _blank()
-    cv2.rectangle(frame, (20, 40), (55, 57), (0, 0, 255), -1)
+    _add_drone_row(frame, "combat", 0)
     return frame
 
 
 def _damaged_frame() -> np.ndarray:
     frame = _blank()
-    cv2.rectangle(frame, (20, 40), (55, 57), (0, 0, 255), -1)
-    cv2.rectangle(frame, (100, 40), (139, 44), (0, 0, 255), -1)
+    _add_drone_row(frame, "combat", 0, bar_color=(0, 0, 255))
     return frame
 
 
 def _red_bar_only_frame() -> np.ndarray:
     frame = _blank()
-    cv2.rectangle(frame, (100, 40), (139, 44), (0, 0, 255), -1)
+    cv2.rectangle(frame, (150, 16), (189, 20), (0, 0, 255), -1)
     return frame
 
 
@@ -62,9 +112,95 @@ def test_counts_idle_rows_and_ignores_return_rows():
     assert detector.update(_idle_frame(5)).idle_count == 5
 
     mixed = _blank()
-    _add_idle_rows(mixed, 3)
+    for row in range(3):
+        _add_drone_row(mixed, "idle", row)
     _add_return_rows(mixed, 2, start_y=98)
     assert detector.update(mixed).idle_count == 3
+
+
+def test_template_match_and_blood_bar_require_both_signals():
+    detector = DroneDetector(count=5)
+
+    solid_block = _blank()
+    cv2.rectangle(solid_block, (40, 16), (99, 33), (0, 210, 20), -1)
+    cv2.rectangle(solid_block, (150, 22), (189, 26), (235, 235, 235), -1)
+    assert detector.update(solid_block).idle_count == 0
+
+    no_bar = _blank()
+    _add_drone_row(no_bar, "idle", 0, with_bar=False)
+    assert detector.update(no_bar).idle_count == 0
+
+
+def test_mixed_idle_and_combat_rows_counts_only_idle():
+    frame = _blank()
+    for row in range(3):
+        _add_drone_row(frame, "idle", row)
+    for row in range(3, 5):
+        _add_drone_row(frame, "combat", row)
+    state = DroneDetector(count=5).update(frame)
+    assert state.idle_count == 3
+    assert state.combat is True
+    assert state.damaged is False
+
+
+def test_template_rows_work_at_scaled_sizes():
+    for scale in (0.5, 0.7, 1.3):
+        frame = _blank()
+        for row in range(5):
+            _add_drone_row(frame, "idle", row, scale=scale)
+        state = DroneDetector(count=5).update(frame)
+        assert state.idle_count == 5
+
+
+def test_half_scale_combat_text_is_not_damaged_bar():
+    frame = _blank()
+    _add_drone_row(frame, "combat", 0, scale=0.5)
+    detector = DroneDetector(count=5, damage_frames=2)
+    for _ in range(5):
+        state = detector.update(frame)
+    assert state.combat is True
+    assert state.damaged is False
+    assert detector.damage_alarm_active() is False
+
+
+def test_combat_bar_colors_distinguish_damage():
+    detector = DroneDetector(count=5, damage_frames=2)
+    white = detector.update(_combat_frame())
+    assert white.combat is True
+    assert white.damaged is False
+
+    red = detector.update(_damaged_frame())
+    assert red.combat is True
+    assert red.damaged is True
+
+
+def test_empty_template_directory_uses_color_bar_fallback(tmp_path):
+    fallback_dir = tmp_path / "empty_templates"
+    fallback_dir.mkdir()
+    frame = _blank()
+    _add_idle_rows(frame, 5)
+    for row in range(5):
+        y = 8 + row * 30
+        cv2.rectangle(frame, (150, y + 1), (189, y + 5), (235, 235, 235), -1)
+
+    detector = DroneDetector(count=5, templates_dir=fallback_dir)
+    state = detector.update(frame)
+    assert detector._using_templates is False
+    assert state.idle_count == 5
+
+    combat = _blank()
+    cv2.rectangle(combat, (40, 16), (75, 33), (0, 0, 255), -1)
+    cv2.rectangle(combat, (150, 22), (189, 26), (0, 0, 255), -1)
+    combat_state = detector.update(combat)
+    assert combat_state.combat is True
+    assert combat_state.damaged is True
+
+    half_scale_combat = _blank()
+    _add_drone_row(half_scale_combat, "combat", 0, scale=0.5)
+    half_scale_state = detector.update(half_scale_combat)
+    assert half_scale_state.combat is True
+    assert half_scale_state.damaged is False
+    assert detector.damage_alarm_active() is False
 
 
 def test_all_idle_requires_configured_count_and_confirm_frames():
@@ -79,7 +215,7 @@ def test_all_idle_requires_configured_count_and_confirm_frames():
 
 def test_combat_while_all_idle_never_chimes():
     frame = _idle_frame(3)
-    cv2.rectangle(frame, (20, 100), (55, 117), (0, 0, 255), -1)
+    _add_drone_row(frame, "combat", 3)
     clock = _Clock()
     detector = DroneDetector(count=3, confirm_frames=3, clock=clock)
     states = [detector.update(frame) for _ in range(10)]

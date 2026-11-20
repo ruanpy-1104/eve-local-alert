@@ -3,7 +3,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ui import theme
 
@@ -14,6 +21,8 @@ class FlightStatusOverlay(QWidget):
     closed_by_user = Signal()
     lock_toggled = Signal(bool)
     position_changed = Signal(int, int)
+    _BASE_HEIGHT = 54
+    _DRONE_HEIGHT = 74
 
     _STATES = {
         "safe": ("安全飞行中", theme.SUCCESS, 13, False),
@@ -28,6 +37,7 @@ class FlightStatusOverlay(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._state = "idle"
+        self._drone_state = ""
         self._locked = False
         self._drag_origin: QPoint | None = None
         self._window_origin: QPoint | None = None
@@ -44,7 +54,7 @@ class FlightStatusOverlay(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setFixedSize(200, 54)
+        self.setFixedSize(200, self._BASE_HEIGHT)
         self.setObjectName("flightOverlay")
         self.setStyleSheet(
             "QWidget#flightOverlay { background: transparent; }"
@@ -57,10 +67,23 @@ class FlightStatusOverlay(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(14, 8, 8, 8)
         root.setSpacing(4)
+        text_column = QVBoxLayout()
+        text_column.setContentsMargins(0, 0, 0, 0)
+        text_column.setSpacing(1)
+        text_column.addStretch(1)
         self.state_label = QLabel()
         self.state_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.state_label.setTextInteractionFlags(Qt.NoTextInteraction)
-        root.addWidget(self.state_label, stretch=1)
+        self.state_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        text_column.addWidget(self.state_label)
+        self.drone_label = QLabel()
+        self.drone_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.drone_label.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.drone_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.drone_label.hide()
+        text_column.addWidget(self.drone_label)
+        text_column.addStretch(1)
+        root.addLayout(text_column, stretch=1)
 
         self.close_btn = QPushButton("×")
         self.close_btn.setToolTip("关闭悬浮窗")
@@ -93,6 +116,41 @@ class FlightStatusOverlay(QWidget):
 
     def state_key(self) -> str:
         return self._state
+
+    def set_drone_state(self, key: str) -> None:
+        """显示无人机空闲 / 受损状态；空值隐藏并恢复悬浮窗原高度。"""
+        normalized = key if key in ("idle", "damaged") else ""
+        self._drone_state = normalized
+        if normalized == "idle":
+            self.drone_label.setText("无人机：空闲")
+            color = theme.SUCCESS
+            size = 11
+            bold = False
+        elif normalized == "damaged":
+            self.drone_label.setText("无人机：受损")
+            color = theme.DANGER
+            size = 12
+            bold = True
+        else:
+            self.drone_label.clear()
+            self.drone_label.hide()
+            self.setFixedSize(200, self._BASE_HEIGHT)
+            self.move(self._clamped_origin(self.x(), self.y()))
+            return
+
+        self.drone_label.setStyleSheet(
+            f"color: {color}; background: transparent;"
+        )
+        font = self.drone_label.font()
+        font.setPointSize(size)
+        font.setBold(bold)
+        self.drone_label.setFont(font)
+        self.drone_label.show()
+        self.setFixedSize(200, self._DRONE_HEIGHT)
+        self.move(self._clamped_origin(self.x(), self.y()))
+
+    def drone_state_key(self) -> str:
+        return self._drone_state
 
     def is_locked(self) -> bool:
         return self._locked

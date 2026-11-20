@@ -127,6 +127,7 @@ class MonitorWorker(QThread):
     flight_state = Signal(str)   # 纯状态键：monitoring/hostile/safe/paused/minimized/lost/idle
     drone_idle = Signal()        # 无人机全部空闲的一次性「叮咚」边沿
     drone_damaged = Signal(bool)  # 红色血条进入 / 退出（连续帧确认）
+    drone_status = Signal(str)   # 无人机显示状态："idle" / "damaged" / ""
 
     def __init__(
         self,
@@ -151,6 +152,7 @@ class MonitorWorker(QThread):
         self._last_fps = 0.0  # 最近一次状态栏 FPS（供顶部状态栏即时刷新）
         self._flight_state = ""
         self._drone_damaged_active = False
+        self._drone_status = ""
 
     def _emit_flight_state(self, state: str) -> None:
         """只在纯状态变化时发信号，避免 UI 重复刷新。"""
@@ -166,12 +168,26 @@ class MonitorWorker(QThread):
         self._drone_damaged_active = damaged
         self.drone_damaged.emit(damaged)
 
+    def _set_drone_status(self, status: str) -> None:
+        """只在无人机悬浮窗状态变化时发信号。"""
+        normalized = status if status in ("idle", "damaged") else ""
+        if normalized == self._drone_status:
+            return
+        self._drone_status = normalized
+        self.drone_status.emit(normalized)
+
     def _handle_drone_state(
         self, detector: DroneDetector, state: DroneState
     ) -> None:
         if state.idle_chime and not self._paused.is_set():
             self.drone_idle.emit()
         self._set_drone_damaged(detector.damage_alarm_active())
+        if detector.damage_alarm_active():
+            self._set_drone_status("damaged")
+        elif state.all_idle:
+            self._set_drone_status("idle")
+        else:
+            self._set_drone_status("")
 
     def _status_text(self, fps: float, hit: bool) -> str:
         """监控状态栏富文本。
@@ -212,6 +228,7 @@ class MonitorWorker(QThread):
 
     def stop(self) -> None:
         self._stop.set()
+        self._set_drone_status("")
 
     def set_paused(self, paused: bool) -> None:
         """设置播报暂停状态（UI 线程调用，工作线程下一帧生效）。"""
@@ -233,6 +250,7 @@ class MonitorWorker(QThread):
         """目标窗口已关闭：置位标志并通知面板退回「未选择目标」状态。"""
         self._window_lost = True
         self._set_drone_damaged(False)
+        self._set_drone_status("")
         self._emit_flight_state("lost")
         self.window_lost.emit("目标程序窗口已关闭，请重新选择目标程序")
 
@@ -248,6 +266,7 @@ class MonitorWorker(QThread):
                 self.status.emit("已停止")
         except Exception as exc:  # noqa: BLE001
             logger.error("监控线程异常：%s", exc, exc_info=True)
+            self._set_drone_status("")
             self.error.emit(str(exc))
 
     def _loop(self) -> None:
@@ -317,6 +336,7 @@ class MonitorWorker(QThread):
                         self._alerting = False
                         alerter.stop()
                     self._set_drone_damaged(False)
+                    self._set_drone_status("")
                     self._emit_flight_state("minimized")
                     if not minimized_reported:
                         minimized_reported = True
@@ -429,6 +449,7 @@ class MonitorWorker(QThread):
         finally:
             alerter.stop()  # 确保退出监控时停止警报
             self._set_drone_damaged(False)
+            self._set_drone_status("")
             capture.close()
 
 
@@ -1087,7 +1108,9 @@ class ControlPanel(QWidget):
         self._drone_dialog: DroneDialog | None = None
         self._overlay: FlightStatusOverlay | None = None
         self._closing = False
+        self._monitoring_active = False
         self._flight_state = "idle"
+        self._drone_state = ""
         drone_cfg = self.config.data.get("drone") or {}
         self._drone_sound = SoundPlayer(
             self._root,
@@ -1259,6 +1282,7 @@ class ControlPanel(QWidget):
         else:
             overlay.reset_position()
         overlay.set_state(self._flight_state)
+        overlay.set_drone_state(self._drone_state)
         overlay.closed_by_user.connect(self._on_overlay_closed)
         overlay.lock_toggled.connect(self._on_overlay_lock_changed)
         overlay.position_changed.connect(self._on_overlay_position_changed)
@@ -1297,6 +1321,7 @@ class ControlPanel(QWidget):
         if visible:
             overlay = self._ensure_overlay()
             overlay.set_state(self._flight_state)
+            overlay.set_drone_state(self._drone_state)
             overlay.show()
             overlay.raise_()
         elif self._overlay is not None:
@@ -1335,6 +1360,12 @@ class ControlPanel(QWidget):
         self._flight_state = state
         if self._overlay is not None:
             self._overlay.set_state(state)
+
+    def _clear_drone_state(self) -> None:
+        """清空缓存的无人机状态，并同步隐藏悬浮窗第二行。"""
+        self._drone_state = ""
+        if self._overlay is not None:
+            self._overlay.set_drone_state("")
 
     def _proportional_height(self) -> int:
         """按监控程序宽高比计算目标高度：控件高 + 预览(窗口宽 - 边距)/程序比例。"""
@@ -1625,6 +1656,7 @@ class ControlPanel(QWidget):
             return
         self._set_program_aspect(cw, ch)
         # 通过窗口内容捕获（PrintWindow）监控所选窗口，不改变窗口 Z 序 / 前台状态。
+        self._clear_drone_state()
         self._drone_sound.stop_alert()
         drone_cfg = self.config.data.get("drone") or {}
         worker_kwargs: dict = {}
@@ -1648,11 +1680,15 @@ class ControlPanel(QWidget):
             flight_signal.connect(self._on_flight_state)
         idle_signal = getattr(self._worker, "drone_idle", None)
         if idle_signal is not None:
-            idle_signal.connect(self._drone_sound.play_idle)
+            idle_signal.connect(self._on_drone_idle)
         damaged_signal = getattr(self._worker, "drone_damaged", None)
         if damaged_signal is not None:
             damaged_signal.connect(self._on_drone_damaged)
+        drone_status_signal = getattr(self._worker, "drone_status", None)
+        if drone_status_signal is not None:
+            drone_status_signal.connect(self._on_drone_status)
         self._worker.start()
+        self._monitoring_active = True
         self.start_btn.setText("停止预警")
         # 每次启动监控重置播报暂停状态
         self.pause_btn.blockSignals(True)
@@ -1664,6 +1700,8 @@ class ControlPanel(QWidget):
 
     def _stop_monitor(self) -> None:
         """停止监控线程并复位按钮；线程未在超时内退出时保留引用等待其自行结束。"""
+        self._monitoring_active = False
+        self._clear_drone_state()
         self._drone_sound.stop_alert()
         worker = self._worker
         if worker is not None:
@@ -1679,11 +1717,25 @@ class ControlPanel(QWidget):
         self.status_label.setText("已停止预警")
         self._on_flight_state("idle")
 
+    def _on_drone_idle(self) -> None:
+        if not self._monitoring_active or self.sender() is not self._worker:
+            return
+        self._drone_sound.play_idle()
+
     def _on_drone_damaged(self, damaged: bool) -> None:
-        if damaged:
-            self._drone_sound.start_alert()
-        else:
+        if not damaged:
             self._drone_sound.stop_alert()
+            return
+        if not self._monitoring_active or self.sender() is not self._worker:
+            return
+        self._drone_sound.start_alert()
+
+    def _on_drone_status(self, status: str) -> None:
+        if not self._monitoring_active or self.sender() is not self._worker:
+            return
+        self._drone_state = status if status in ("idle", "damaged") else ""
+        if self._overlay is not None:
+            self._overlay.set_drone_state(self._drone_state)
 
     def _on_preview(self, frame) -> None:
         if frame is None:
@@ -1694,6 +1746,8 @@ class ControlPanel(QWidget):
 
     def _on_error(self, message: str) -> None:
         logger.error("监控出错：%s", message)
+        self._monitoring_active = False
+        self._clear_drone_state()
         self._drone_sound.stop_alert()
         self.status_label.setStyleSheet(
             f"color:{theme.WARN};font-weight:bold;font-size:13px;"
@@ -1706,6 +1760,8 @@ class ControlPanel(QWidget):
     def _on_window_lost(self, message: str) -> None:
         """目标窗口已关闭：退回「未选择目标」界面，引导用户重新选择程序后开始预警。"""
         logger.warning("监控目标窗口已关闭：%s", message)
+        self._monitoring_active = False
+        self._clear_drone_state()
         self._drone_sound.stop_alert()
         self._on_flight_state("lost")
         self.status_label.setStyleSheet("")
@@ -1721,6 +1777,7 @@ class ControlPanel(QWidget):
 
     def _on_window_minimized(self) -> None:
         """目标窗口最小化：播放提示音并置顶面板提醒玩家（不抢键盘焦点，不提示窗口关闭）。"""
+        self._clear_drone_state()
         self._drone_sound.stop_alert()
         self._on_flight_state("minimized")
         try:
@@ -1868,6 +1925,8 @@ class ControlPanel(QWidget):
 
     def closeEvent(self, event) -> None:
         self._closing = True
+        self._monitoring_active = False
+        self._clear_drone_state()
         self._end_selection()
         self._save_overlay()
         if self._overlay is not None:

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -26,7 +27,7 @@ def _load_image(path: Path) -> np.ndarray | None:
         return None
 
 
-def probe(directory: Path) -> dict:
+def probe(directory: Path, scale: float = 1.0) -> dict:
     names = ("无人机空闲.png", "无人机战斗.png", "无人机返回.png")
     if not directory.is_dir():
         return {"skip": True}
@@ -44,6 +45,14 @@ def probe(directory: Path) -> dict:
                 "damaged": False,
             }
             continue
+        if scale != 1.0:
+            frame = cv2.resize(
+                frame,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_AREA,
+            )
         detector = DroneDetector(count=5)
         state = None
         for _ in range(5):
@@ -57,9 +66,18 @@ def probe(directory: Path) -> dict:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = sys.argv[1:] if argv is None else argv
-    directory = Path(args[0]) if args else Path("样例")
-    print(json.dumps(probe(directory), ensure_ascii=False))
+    parser = argparse.ArgumentParser(description="无人机样例多尺度探针")
+    parser.add_argument("directory", nargs="?", default="样例")
+    parser.add_argument("--scale", type=float, default=1.0)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if args.scale <= 0:
+        parser.error("--scale 必须大于 0")
+    print(
+        json.dumps(
+            probe(Path(args.directory), scale=args.scale),
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":

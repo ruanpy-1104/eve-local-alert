@@ -73,3 +73,48 @@ def test_reset_position_is_top_right_with_margin(app):
     assert overlay.x() == rect.right() - overlay.width() - 24 + 1
     assert overlay.y() == rect.top() + 24
     overlay.close()
+
+
+def test_drone_state_text_color_visibility_and_height(app):
+    overlay = FlightStatusOverlay()
+    overlay.show()
+    app.processEvents()
+    assert overlay.height() == 54
+    assert overlay.drone_label.isHidden()
+
+    overlay.set_drone_state("idle")
+    app.processEvents()
+    assert overlay.drone_state_key() == "idle"
+    assert overlay.drone_label.text() == "无人机：空闲"
+    assert theme.SUCCESS.lower() in overlay.drone_label.styleSheet().lower()
+    assert overlay.drone_label.font().pointSize() == 11
+    assert overlay.drone_label.font().bold() is False
+    assert overlay.drone_label.isVisible()
+    assert overlay.height() == 74
+
+    overlay.set_drone_state("damaged")
+    app.processEvents()
+    assert overlay.drone_state_key() == "damaged"
+    assert overlay.drone_label.text() == "无人机：受损"
+    assert theme.DANGER.lower() in overlay.drone_label.styleSheet().lower()
+    assert overlay.drone_label.font().pointSize() == 12
+    assert overlay.drone_label.font().bold() is True
+    assert overlay.drone_label.isVisible()
+    assert overlay.height() == 74
+
+    overlay.set_drone_state("")
+    app.processEvents()
+    assert overlay.drone_state_key() == ""
+    assert overlay.drone_label.isHidden()
+    assert overlay.height() == 54
+    overlay.close()
+
+
+def test_drone_state_resize_keeps_overlay_on_screen(app):
+    overlay = FlightStatusOverlay()
+    screen = QApplication.primaryScreen().availableGeometry()
+    overlay.move(screen.right() - overlay.width() + 1, screen.bottom())
+    overlay.set_drone_state("damaged")
+    assert overlay.x() + overlay.width() <= screen.right() + 1
+    assert overlay.y() + overlay.height() <= screen.bottom() + 1
+    overlay.close()

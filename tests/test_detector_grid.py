@@ -231,6 +231,20 @@ class TestGridLock:
         assert detector.last_boxes[0][0] == 24
         assert detector.last_boxes[0][1] == pytest.approx(59, abs=1)
 
+    @pytest.mark.parametrize("bar_rows", [(62, 67), (65,)])
+    def test_white_slot_accepts_dark_horizontal_center_pattern(self, bar_rows):
+        frame = _frame(width=180, height=140, bg=(170, 170, 170))
+        for index in (0, 1, 3, 4):
+            _square(frame, BLUE, 24, 15 + index * 22, 15, "star")
+        _square(frame, (179, 179, 179), 24, 59, 15, "blank")
+        for y in bar_rows:
+            cv2.rectangle(frame, (27, y), (35, y + 1), (110, 110, 110), -1)
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert len(detector.last_boxes) == 1
+        assert detector.last_boxes[0][0] == 24
+        assert detector.last_boxes[0][1] == pytest.approx(59, abs=1)
+
     def test_empty_slot_with_bright_background_star_is_not_filled(self):
         frame = _frame(width=180, height=140, bg=(170, 170, 170))
         for index in (0, 1, 3, 4):

@@ -16,6 +16,7 @@ EXPECTED = {
     "白名.png": True,
     "白色明亮背景.png": True,
     "修改后检测不到原图.png": True,
+    "白色横杠列表.png": True,
     "所有可能的方块及内部图标.png": True,
     "蓝色紫色列表.png": False,
     "列表尺寸放大.png": False,
@@ -31,6 +32,7 @@ EXPECTED = {
 MIN_HOSTILE = {
     "白色明亮背景.png": 5,
     "修改后检测不到原图.png": 1,
+    "白色横杠列表.png": 1,
 }
 
 

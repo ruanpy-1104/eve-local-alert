@@ -638,7 +638,7 @@ class Detector:
         return accepted
 
     @staticmethod
-    def _slot_has_bright_edge_evidence(
+    def _slot_has_center_pattern_edge_evidence(
         image_hsv: np.ndarray,
         x0: int,
         y0: int,
@@ -647,16 +647,18 @@ class Detector:
         v_channel = image_hsv[..., 2]
         center_lo = size // 4
         center_hi = max(center_lo + 1, (size * 3) // 4)
-        bright_count = int(
-            np.count_nonzero(
-                v_channel[
-                    y0 + center_lo : y0 + center_hi,
-                    x0 + center_lo : x0 + center_hi,
-                ]
-                >= 220
-            )
+        center = v_channel[
+            y0 + center_lo : y0 + center_hi,
+            x0 + center_lo : x0 + center_hi,
+        ]
+        if center.size == 0:
+            return False
+        median = float(np.median(center))
+        spread = float(np.percentile(center, 95) - np.percentile(center, 5))
+        pattern_pixels = int(
+            np.count_nonzero(np.abs(center.astype(np.int16) - median) >= 12)
         )
-        if bright_count < max(6, size // 2):
+        if spread < 20.0 or pattern_pixels < max(4, size // 3):
             return False
 
         inset = max(1, size // 5)
@@ -763,7 +765,7 @@ class Detector:
                     continue
                 if (
                     contrast >= white_contrast_floor
-                    or self._slot_has_bright_edge_evidence(
+                    or self._slot_has_center_pattern_edge_evidence(
                         image_hsv, x0, y0, size
                     )
                 ):

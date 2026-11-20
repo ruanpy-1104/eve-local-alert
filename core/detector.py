@@ -637,6 +637,85 @@ class Detector:
         self._grid_misses = 0
         return accepted
 
+    @staticmethod
+    def _slot_has_bright_edge_evidence(
+        image_hsv: np.ndarray,
+        x0: int,
+        y0: int,
+        size: int,
+    ) -> bool:
+        v_channel = image_hsv[..., 2]
+        center_lo = size // 4
+        center_hi = max(center_lo + 1, (size * 3) // 4)
+        bright_count = int(
+            np.count_nonzero(
+                v_channel[
+                    y0 + center_lo : y0 + center_hi,
+                    x0 + center_lo : x0 + center_hi,
+                ]
+                >= 220
+            )
+        )
+        if bright_count < max(6, size // 2):
+            return False
+
+        inset = max(1, size // 5)
+        outer = max(1, size // 6)
+        band = max(1, size // 8)
+        height, width = v_channel.shape
+        if (
+            y0 - outer < 0
+            or y0 + size + outer > height
+            or x0 - outer < 0
+            or x0 + size + outer > width
+        ):
+            return False
+        inner = (
+            v_channel[
+                y0 + inset : y0 + inset + band,
+                x0 + inset : x0 + size - inset,
+            ],
+            v_channel[
+                y0 + size - inset - band : y0 + size - inset,
+                x0 + inset : x0 + size - inset,
+            ],
+            v_channel[
+                y0 + inset : y0 + size - inset,
+                x0 + inset : x0 + inset + band,
+            ],
+            v_channel[
+                y0 + inset : y0 + size - inset,
+                x0 + size - inset - band : x0 + size - inset,
+            ],
+        )
+        outside = (
+            v_channel[
+                y0 - outer : y0,
+                x0 + inset : x0 + size - inset,
+            ],
+            v_channel[
+                y0 + size : y0 + size + outer,
+                x0 + inset : x0 + size - inset,
+            ],
+            v_channel[
+                y0 + inset : y0 + size - inset,
+                x0 - outer : x0,
+            ],
+            v_channel[
+                y0 + inset : y0 + size - inset,
+                x0 + size : x0 + size + outer,
+            ],
+        )
+        steps = 0
+        for inner_strip, outer_strip in zip(inner, outside):
+            if (
+                inner_strip.size
+                and outer_strip.size
+                and abs(float(inner_strip.mean()) - float(outer_strip.mean())) >= 4.0
+            ):
+                steps += 1
+        return steps >= 2
+
     def _complete_grid_slots(
         self,
         accepted: list[_Square],
@@ -668,25 +747,36 @@ class Detector:
             line_cy = phase + line * pitch
             if line_cy < first_cy or line_cy > last_cy:
                 continue
-            y0 = int(round(line_cy - size / 2.0))
-            if y0 < 0 or y0 + size > height:
+            base_y0 = int(round(line_cy - size / 2.0))
+            selected: tuple[int, tuple[float, float, float, int, int, int]] | None = None
+            for y0 in (base_y0, base_y0 - 1, base_y0 + 1):
+                if y0 < 0 or y0 + size > height:
+                    continue
+                stats = self._surface_stats(image_lab, image_hsv, x0, y0, size, size)
+                corner, face, contrast, med_h, med_s, med_v = stats
+                if (
+                    corner < 0.78
+                    or face < 0.68
+                    or med_s >= 70
+                    or med_v < white_floor
+                ):
+                    continue
+                if (
+                    contrast >= white_contrast_floor
+                    or self._slot_has_bright_edge_evidence(
+                        image_hsv, x0, y0, size
+                    )
+                ):
+                    selected = (y0, stats)
+                    break
+            if selected is None:
                 continue
+            y0, (corner, face, contrast, med_h, med_s, med_v) = selected
             cy = y0 + size / 2.0
             if any(
                 abs(candidate.cx - x) <= 0.35 * size
                 and abs(candidate.cy - cy) <= 0.35 * size
                 for candidate in completed
-            ):
-                continue
-            corner, face, contrast, med_h, med_s, med_v = self._surface_stats(
-                image_lab, image_hsv, x0, y0, size, size
-            )
-            if (
-                corner < 0.78
-                or face < 0.68
-                or med_s >= 70
-                or med_v < white_floor
-                or contrast < white_contrast_floor
             ):
                 continue
             candidate = _Square(

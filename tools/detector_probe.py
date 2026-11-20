@@ -15,6 +15,7 @@ EXPECTED = {
     "红名.png": True,
     "白名.png": True,
     "白色明亮背景.png": True,
+    "修改后检测不到原图.png": True,
     "所有可能的方块及内部图标.png": True,
     "蓝色紫色列表.png": False,
     "列表尺寸放大.png": False,
@@ -25,6 +26,11 @@ EXPECTED = {
     "空间站环境.png": False,
     "空间站环境2.png": False,
     "太空中的空间站.png": False,
+}
+
+MIN_HOSTILE = {
+    "白色明亮背景.png": 5,
+    "修改后检测不到原图.png": 1,
 }
 
 
@@ -57,15 +63,16 @@ def main(argv: list[str] | None = None) -> int:
         detector = Detector(confirm_frames=3)
         alerts = [detector.detect(frame) for _ in range(3)]
         alert = any(alerts)
-        count_ok = filename != "白色明亮背景.png" or len(detector.last_boxes) >= 5
+        required = MIN_HOSTILE.get(filename, 0)
+        count_ok = len(detector.last_boxes) >= required
         if not count_ok:
             failures.append(
-                f"{filename}: hostile_boxes={len(detector.last_boxes)}, expected >=5"
+                f"{filename}: hostile_boxes={len(detector.last_boxes)}, expected >={required}"
             )
         status = (
             "OK"
             if alert == expected and count_ok
-            else f"FAIL(expected {expected}, hostile>=5)"
+            else f"FAIL(expected {expected}, hostile>={required})"
         )
         if alert != expected:
             failures.append(f"{filename}: alert={alert}, expected={expected}")

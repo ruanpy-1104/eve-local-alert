@@ -218,6 +218,29 @@ class TestGridLock:
         assert len(detector.last_all_boxes) == 4
         assert not detector.last_boxes
 
+    def test_white_slot_uses_bright_emblem_and_square_edges(self):
+        frame = _frame(width=180, height=140, bg=(170, 170, 170))
+        for index in (0, 1, 3, 4):
+            _square(frame, BLUE, 24, 15 + index * 22, 15, "star")
+        _square(frame, (179, 179, 179), 24, 59, 15, "star")
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert detector.last_grid is not None
+        assert detector.last_grid["pitch"] == pytest.approx(22, abs=0.5)
+        assert len(detector.last_boxes) == 1
+        assert detector.last_boxes[0][0] == 24
+        assert detector.last_boxes[0][1] == pytest.approx(59, abs=1)
+
+    def test_empty_slot_with_bright_background_star_is_not_filled(self):
+        frame = _frame(width=180, height=140, bg=(170, 170, 170))
+        for index in (0, 1, 3, 4):
+            _square(frame, BLUE, 24, 15 + index * 22, 15, "star")
+        cv2.circle(frame, (31, 66), 2, WHITE, -1)
+        detector = Detector()
+        assert not detector.has_red(frame)
+        assert detector.last_grid is not None
+        assert not detector.last_boxes
+
     def test_friendly_rows_only_are_not_hostile_boxes(self):
         frame = _grid([BLUE, GREEN, PURPLE, BLUE], rows=4)
         detector = Detector()

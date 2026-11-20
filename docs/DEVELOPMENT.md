@@ -49,13 +49,15 @@ python main.py
 ./.venv/Scripts/python.exe tools/detector_probe.py 样例
 ```
 
-`detector_probe.py` 会对下列 13 张样例连续喂入 3 帧，并检查最终报警结果；`白色明亮背景.png` 另要求至少检出 5 个敌对方格。
+`detector_probe.py` 会对下列 15 张样例连续喂入 3 帧，并检查最终报警结果；`白色明亮背景.png` 另要求至少检出 5 个敌对方格。
 
 | 样例 | 预期报警 | 主要覆盖 |
 | --- | --- | --- |
 | `红名.png` | 是 | 敌对多色网格 |
 | `白名.png` | 是 | 白方格分类 |
 | `白色明亮背景.png` | 是（敌对框 ≥ 5） | 白图标比亮背景更暗 |
+| `修改后检测不到原图.png` | 是（敌对框 ≥ 1） | 米色低对比白方格 + 白星 |
+| `白色横杠列表.png` | 是（敌对框 ≥ 1） | 白方格中心为两条横杠 |
 | `所有可能的方块及内部图标.png` | 是 | 中心图形无关 |
 | `蓝色紫色列表.png` | 否 | 友军只建网 |
 | `列表尺寸放大.png` | 否 | 缩放与固定网格 |
@@ -89,7 +91,7 @@ python main.py
     "confirm_frames": 3,
     "downscale": 2,
     "colors": ["red", "orange", "yellow", "gray_white"],
-    "strictness": 50
+    "compat": "auto"
   },
   "alert": {
     "sound_file": "assets/alert.wav",
@@ -122,7 +124,7 @@ python main.py
 | `detection.confirm_frames` | int | 3 | 连续命中帧数（时序确认）。 |
 | `detection.downscale` | int | 2 | 兼容保留，已忽略。检测器始终使用输入 ROI 的 1× 分辨率，也不再缩放 `last_boxes` 坐标。 |
 | `detection.colors` | string[] | 红 / 橙 / 黄 / 灰白 | 启用的警报颜色键（见 `core/colors.py` 的 `EVE_COLORS`，共 4 种）。加载时剔除已移除 / 未知的颜色键并去重；剔除后为空则回退默认四色。 |
-| `detection.strictness` | int | 50 | 识别程度三档：0（宽松）/ 50（适中）/ 100（严格），作用于方格形状、局部对比度和颜色容忍度（见 §3.6、§7）。首次使用默认 50，应用保存后按用户记忆值持久化；旧版五档遗留值（25/75 等）加载时自动归档到最近三档（25→0、75→50）。 |
+| `detection.compat` | string | `"auto"` | 兼容模式，可选 `auto` / `low_contrast` / `strict`；只调整对比度、边缘与颜色阈值，不改变方格、网格和中心图案判定（见 §3.6、§7）。旧配置的 `detection.strictness` 在加载时自动迁移（≤25 → `low_contrast`、50 → `auto`、≥75 → `strict`）并移除旧字段；保存后只写 `detection.compat`，无需用户手动修改旧 config。 |
 | `alert.sound_file` | string | `"assets/alert.wav"` | 警报音相对项目根路径；缺失时回退系统蜂鸣。 |
 | `alert.resume_delay` | int | `10` | 暂停预警的最短持续时长（秒）：暂停至少持续该时长，且目标不在视野时才自动恢复；0 表示黑屏即恢复。 |
 | `remote_alert.enabled` | bool | `false` | 远程预警开关（Server酱 微信推送）。**每次启动强制重置为 `false`**（见 `core/config.py` 的 `_load`），其余选项保留用户最后一次修改；关闭时不产生任何网络请求。面板「远程预警」按钮按此值切换样式：开启时套用与「开始预警」相同的主行动样式（`role=primary`）作状态提示，关闭时恢复普通次要样式（`_update_remote_button()`，动态属性变更后 unpolish/polish 刷新 QSS）。 |
@@ -133,7 +135,7 @@ python main.py
 | `logging.level` | string | `"error"` | 日志级别：debug / info / warning / error / critical。 |
 | `logging.file` | string | `"logs/eve-alert.log"` | 日志文件相对路径（相对数据目录 `app_dir()`；开发期为项目根，打包后为 `%APPDATA%\eve-alert`）。 |
 
-> 注意：方格尺寸、长宽比、外框/四角/面一致性与网格参数由 `Detector` 内部按 1× 图像计算，不暴露为配置项。`confirm_frames` 仍有效；`downscale` 只用于兼容旧配置，实际被忽略。旧版配置中的 `min_area` / `min_aspect_ratio` 等多余字段会在加载时自动剔除。
+> 注意：方格尺寸、长宽比、外框/四角/面一致性与网格参数由 `Detector` 内部按 1× 图像计算，不暴露为配置项。`compat` 只控制对比度、边缘与颜色阈值；`confirm_frames` 仍有效，`downscale` 只用于兼容旧配置且实际被忽略。旧版配置中的 `strictness`、`min_area` / `min_aspect_ratio` 等多余字段会在加载时自动迁移或剔除。
 
 ---
 
@@ -159,7 +161,7 @@ EVE_COLORS: dict[str, dict]          # UI/警报 4 色：label / rgb / h_ranges 
 CLASSIFIER_COLORS: dict[str, dict]   # 完整分类色：敌对 4 色 + 友军 blue / green / purple
 COLOR_ORDER: tuple[str, ...]         # UI 展示顺序
 DEFAULT_ALERT_COLORS: list[str]      # 默认启用：red / orange / yellow / gray_white
-DEFAULT_STRICTNESS: int              # 默认识别程度 50
+DEFAULT_STRICTNESS: int              # 兼容模式内部映射基准 50，非用户配置
 
 def is_achromatic(name: str) -> bool: ...                       # 是否无色相（灰白）
 def color_ranges(name: str, strictness: float = 0.5) -> list[tuple[tuple, tuple]]: ...
@@ -168,7 +170,7 @@ def color_ranges(name: str, strictness: float = 0.5) -> list[tuple[tuple, tuple]
 - 保留的 4 种预设取自「样例/总览可选颜色.png」实测采样：红 (191,0,0) / 橙 (255,89,0) / 黄 (255,178,0) / 灰白 (178,178,178)。
 - `CLASSIFIER_COLORS` 额外定义蓝 / 绿 / 紫三种友军色，只用于方格分类和网格建立；它们不会出现在 UI 警报颜色中，也不进入 `last_boxes`。
 - **色相窗口按相邻预设的中点固定划分、两两不相交**：红 `0–5 ∪ 175–179`（跨色相环 0 点，拆两段）、橙 `6–15`、黄 `16–26`；灰白用明度区间描述。这样勾「橙」不会连带命中「黄」（三色暖色在 H 上只相距 10~11）。
-- `color_ranges` 返回指定颜色在给定严格度（0 宽松 ~ 1 严格）下的 HSV 阈值区间列表；**严格度只抬高饱和度 / 明度下限**，不收窄色相窗口（实测总览红图标 H≈1.5–3.4，收窄会在严格档造成漏报）；未知颜色（含已移除的旧颜色键）返回空列表。
+- `color_ranges` 返回指定颜色在给定兼容映射标量（0 低门槛 ~ 1 高门槛）下的 HSV 阈值区间列表；该标量只抬高饱和度 / 明度下限，不收窄色相窗口（实测总览红图标 H≈1.5–3.4，收窄会在高门槛模式造成漏报）；未知颜色（含已移除的旧颜色键）返回空列表。
 
 ### 3.3 window_locator（窗口定位）
 
@@ -227,7 +229,7 @@ class ROI:
 ```python
 class Detector:
     def __init__(self, confirm_frames=3, downscale=2, colors=None,
-                 strictness=50, **legacy): ...
+                 compat=None, strictness=None, **legacy): ...
     def reset(self) -> None: ...
     def red_mask(self, frame_bgr: np.ndarray) -> np.ndarray: ...
     def red_boxes(self, frame_bgr: np.ndarray) -> list[tuple[int, int, int, int]]: ...
@@ -239,7 +241,8 @@ last_all_boxes: list[tuple[int, int, int, int]]   # 当前接受方格，含友�
 last_grid: dict | None                            # x / size / pitch / rows / phase
 ```
 
-- 构造函数保持旧调用兼容：接受 `confirm_frames`、`downscale`、`colors`、`strictness` 以及 `**legacy` 旧字段；`strictness` 钳制到 0–100，`colors` 只筛出四个敌对键。`downscale` 仅保存字段值，任何流程都不缩放图像。
+- 构造函数以 `compat` 作为真实模式，接受 `auto` / `low_contrast` / `strict`；非法值回退 `auto`。为保持旧调用兼容，仍接受 `strictness` 并映射为 `low_contrast`（≤25）/ `auto`（>25 且 <75）/ `strict`（≥75）；显式合法的 `compat` 优先于 `strictness`。`colors` 只筛出四个敌对键，`downscale` 仅保存字段值，任何流程都不缩放图像。
+- `self.compat` 是真实模式；`self.strictness` 只是兼容映射属性，对应 `low_contrast=0` / `auto=50` / `strict=100`，不是用户配置项。三档只调整局部对比度、Canny 边缘、自适应暗面参数以及 S/V/色相容差等颜色阈值；方格外形、外框/四角填充率、非中心面一致性、中心 50% 豁免和固定网格参数均保持不变。
 - 检测单位是玩家名字前的阵营方格，不是颜色块或名字条。名字、文字宽度、中心星形/十字/横杆/圆点/六边形/空白均不参与判断。
 - 公开结果是当前帧已接受的方格：`last_boxes` 只含已启用敌对色，`last_all_boxes` 还含蓝/绿/紫友军；`last_grid` 提供网格 `x/size/pitch/rows/phase`。`red_mask` 返回与输入同尺寸掩码，只在 `last_boxes` 对应位置填充 255。
 - `red_boxes` 与 `has_red` 重新执行单帧分析，不带跨帧确认；`detect` 执行分析并更新位置 + 颜色轨迹。重置后网格、轨迹与三个公开结果字段全部清空。
@@ -401,13 +404,13 @@ function detect(frame_bgr):
 
 ## 7. 颜色选择设计
 
-取代早期「取样器 + 阈值滑动条」的校准器，改为**预设颜色勾选 + 识别程度滑块**，降低调参门槛：
+取代早期「取样器 + 阈值滑动条」的校准器，颜色选择改为**预设颜色勾选 + 兼容模式下拉框**，降低调参门槛：
 
 1. **色块勾选：** 展示 4 种 EVE 总览颜色色块（红 / 橙 / 黄 / 灰白，**一行等宽平铺**，色块上显示颜色名、勾选前缀 ✓），玩家多选需要警报的颜色，默认全部勾选。一个都不勾时拒绝应用并提示「请至少勾选一种颜色」（否则掩码恒为空、警报永不触发）。
-2. **识别程度滑块：** 0（宽松）~ 100（严格）的**固定档位 0 / 50 / 100**（拖动时自动吸附），现在同步调节方格边缘/形状门槛、局部对比度、面一致性和颜色容忍度（见 §3.6）。收到误报往严格调，漏报往宽松调；滑块首次使用默认停在 50（适中），应用保存后按 `detection.strictness` 记忆值恢复。
-3. **应用：** 将 `detection.colors` 与 `detection.strictness` 写回 `config.json`，按钮行左侧短暂显示绿色「已应用」反馈（校验失败时为橙色提示）。
+2. **兼容模式下拉框：** 提供三档并显示说明文字（见 §3.6）。`auto` 为默认，适合普通 SDR 与常规显卡；`low_contrast` 面向 HDR、画面发灰、亮背景白图标漏报与 A/N 饱和度差异；`strict` 面向误报较多、背景干扰很强的画面。漏报白图标时先试低对比兼容，误报较多时再试严格。
+3. **应用：** 将 `detection.colors` 与 `detection.compat` 写回 `config.json`，并显式移除旧 `strictness`；按钮行左侧短暂显示绿色「已应用」反馈（校验失败时为橙色提示）。
 
-> 布局：标题「警报颜色」「识别程度」作为**内容区块上方的纯文字标题**（无边框、位于区块外侧）；色块放在浅色卡片容器内（4 个色块单行等分）；识别程度为一行滑块（无卡片框，仅轨道填充有颜色，其余与对话背景一致）。颜色选择对话框不再内嵌实时预览：预览能力已移至主面板「预览」按钮的独立窗口（`PreviewDialog`），颜色选择只负责配置项。
+> 布局：标题「警报颜色」「兼容模式」作为**内容区块上方的纯文字标题**（无边框、位于区块外侧）；色块放在浅色卡片容器内（4 个色块单行等分）；兼容模式为一行下拉框，下方显示「只调整对比度/边缘/颜色门槛，不改变方格与网格判定。」颜色选择对话框不再内嵌实时预览：预览能力已移至主面板「预览」按钮的独立窗口（`PreviewDialog`），颜色选择只负责配置项。
 
 ---
 
@@ -417,10 +420,10 @@ function detect(frame_bgr):
 
 | 用例文件 | 覆盖内容 |
 | --- | --- |
-| `test_config.py` | 默认配置 / 深度合并 / 读写往返 / 颜色键迁移兜底（断言 `DEFAULT_CONFIG`，不依赖用户 config.json） |
+| `test_config.py` | 默认配置 / 深度合并 / 读写往返 / 旧 `strictness` 到 `compat` 的迁移与移除 / 新旧字段并存时 `compat` 优先 / 颜色键迁移兜底（断言 `DEFAULT_CONFIG`，不依赖用户 config.json） |
 | `test_logger.py` | 级别解析、`setup_logging` 写文件与格式 |
-| `test_colors.py` | 4 色预设、色相窗口两两互斥、严格度插值（只抬高 S/V 下限）、未知 / 已移除颜色返回空列表 |
-| `test_color_picker.py` | 颜色选择对话框（offscreen）：4 色块排版与勾选标记、应用写回、全不勾拒绝、默认全选 |
+| `test_colors.py` | 4 色预设、色相窗口两两互斥、兼容映射标量插值（只抬高 S/V 下限）、未知 / 已移除颜色返回空列表 |
+| `test_color_picker.py` | 颜色选择对话框（offscreen）：4 色块排版与勾选标记、兼容模式三档且默认 `auto`、颜色与 `compat` 持久化、保存后不含 `strictness`、全不勾拒绝、默认全选 |
 | `test_panel_smoke.py` | 控制面板冒烟（offscreen）：界面可构建、未选目标时按钮置灰、停止无 worker 安全、进程名未知时写空串 |
 | `test_theme.py` | 主题 QSS 像素级校验（offscreen）：按钮获得焦点后不残留蓝色外框、主行动按钮自身蓝底不受影响 |
 | `test_detector.py` | 敌对/友军颜色分类、白图标暗于亮背景、中心图形无关、方格尺寸、圆灯/横条/空心过滤、单帧 fail-safe、位置 + 颜色时序、`downscale` 兼容、各公开结果字段 |
@@ -432,7 +435,7 @@ function detect(frame_bgr):
 | `test_window_locator.py` | 窗口枚举 / 匹配优先级 / 最小化检测 |
 | `test_alerter.py` | start / stop / is_active 状态机 |
 | `test_notifier.py` | Server酱 请求构造 / 结果解析 / 失败与空 SendKey 短路 / 异步触发条件 |
-| `tools/detector_probe.py` | 13 张总览样例报警期望；白色明亮背景至少 5 个敌对框；输出 `last_boxes` / `last_all_boxes` / 网格 `rows,pitch,size` |
+| `tools/detector_probe.py` | 15 张总览样例报警期望；白色明亮背景至少 5 个敌对框；输出 `last_boxes` / `last_all_boxes` / 网格 `rows,pitch,size` |
 
 运行：`python -m pytest`（配置见 `pytest.ini`）。
 

@@ -95,4 +95,4 @@
 6. `git tag v1.2.1`，推送 main + tag
 7. `gh release create v1.2.1 ... --notes-file docs/release-notes-v1.2.1.md --latest`
 
-> 当前分支：`main`；安装包已构建，待推送 tag 与 GitHub Release。
+> 当前分支：`main`；tag `v1.2.1` 与 GitHub Release 已发布。

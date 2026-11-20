@@ -42,6 +42,7 @@ def probe(directory: Path, scale: float = 1.0) -> dict:
             results[name] = {
                 "idle_count": 0,
                 "combat": False,
+                "returning": False,
                 "damaged": False,
             }
             continue
@@ -53,13 +54,14 @@ def probe(directory: Path, scale: float = 1.0) -> dict:
                 fy=scale,
                 interpolation=cv2.INTER_AREA,
             )
-        detector = DroneDetector(count=5)
+        detector = DroneDetector()
         state = None
         for _ in range(5):
             state = detector.update(frame)
         results[name] = {
             "idle_count": state.idle_count if state is not None else 0,
             "combat": bool(state.combat) if state is not None else False,
+            "returning": bool(state.returning) if state is not None else False,
             "damaged": bool(state.damaged) if state is not None else False,
         }
     return results

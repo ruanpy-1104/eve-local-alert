@@ -49,7 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "logging": {"level": "error", "file": "logs/eve-alert.log"},
     "drone": {
         "enabled": False,
-        "count": 5,
+        "idle_delay": 10,
         "roi": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
         "idle_sound": "assets/drone_idle.wav",
         "alert_sound": "assets/drone_alert.wav",
@@ -100,15 +100,15 @@ def _normalize_colors(value: object) -> list[str]:
     return kept or list(DEFAULT_ALERT_COLORS)
 
 
-def _normalize_count(value: object) -> int:
-    """把无人机数量收敛到 1–5；非法值回退默认 5。"""
+def _normalize_idle_delay(value: object) -> int:
+    """把无人机空闲提示延时收敛到 1–120 秒；非法值回退默认 10。"""
     if isinstance(value, bool):
-        return 5
+        return 10
     try:
-        count = int(value)
+        idle_delay = int(value)
     except (TypeError, ValueError, OverflowError):
-        return 5
-    return max(1, min(5, count))
+        return 10
+    return max(1, min(120, idle_delay))
 
 
 def _normalize_drone_roi(value: object) -> dict[str, float]:
@@ -145,7 +145,7 @@ def _normalize_drone(drone: object) -> dict[str, Any]:
     alert_sound = current.get("alert_sound", DEFAULT_CONFIG["drone"]["alert_sound"])
     return {
         "enabled": enabled if isinstance(enabled, bool) else False,
-        "count": _normalize_count(current.get("count", 5)),
+        "idle_delay": _normalize_idle_delay(current.get("idle_delay", 10)),
         "roi": _normalize_drone_roi(current.get("roi")),
         "idle_sound": (
             idle_sound

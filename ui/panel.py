@@ -188,22 +188,24 @@ class MonitorWorker(QThread):
     def update_drone_detector(
         self,
     ) -> tuple[dict, DroneDetector | None]:
-        """读取最新无人机配置；enabled / count / roi 变化时重建检测器。"""
+        """读取最新无人机配置；enabled / idle_delay / roi 变化时重建检测器。"""
         configured = self._config.data.get("drone")
         drone_cfg = dict(configured or self._drone_config or {})
         enabled = bool(drone_cfg.get("enabled", False))
         try:
-            count = max(1, min(5, int(drone_cfg.get("count", 5))))
+            idle_delay = max(1, min(120, int(drone_cfg.get("idle_delay", 10))))
         except (TypeError, ValueError, OverflowError):
-            count = 5
+            idle_delay = 10
         roi = drone_cfg.get("roi")
         roi = dict(roi) if isinstance(roi, dict) else {}
         roi_key = tuple(roi.get(key) for key in ("x", "y", "width", "height"))
-        config_key = (enabled, count, roi_key)
+        config_key = (enabled, idle_delay, roi_key)
         if config_key != self._drone_config_key:
             self._drone_config_key = config_key
             self._reset_drone_activity()
-            self._drone_detector = DroneDetector(count=count) if enabled else None
+            self._drone_detector = (
+                DroneDetector(idle_delay_seconds=idle_delay) if enabled else None
+            )
         return drone_cfg, self._drone_detector
 
     def _handle_drone_state(

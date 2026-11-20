@@ -150,6 +150,7 @@ def test_monitor_worker_mutes_drone_chime_while_paused(app, tmp_path):
     state = DroneState(
         idle_count=5,
         combat=False,
+        returning=False,
         damaged=False,
         all_idle=True,
         idle_chime=True,
@@ -177,6 +178,7 @@ def test_monitor_worker_emits_drone_status_with_damage_priority(app, tmp_path):
     state = DroneState(
         idle_count=5,
         combat=True,
+        returning=False,
         damaged=True,
         all_idle=True,
         idle_chime=False,
@@ -190,14 +192,14 @@ def test_monitor_worker_emits_drone_status_with_damage_priority(app, tmp_path):
     detector._alarm_streak = 0
     worker._handle_drone_state(
         detector,
-        DroneState(5, False, False, True, False),
+        DroneState(5, False, False, False, True, False),
     )
     app.processEvents()
     assert emitted == ["damaged", ""]
 
     worker._handle_drone_state(
         detector,
-        DroneState(5, False, False, True, True),
+        DroneState(5, False, False, False, True, True),
     )
     app.processEvents()
     assert emitted == ["damaged", "", "idle"]
@@ -215,7 +217,7 @@ def test_monitor_worker_idle_status_requires_actual_chime(app, tmp_path):
 
     worker._handle_drone_state(
         detector,
-        DroneState(5, False, False, True, False),
+        DroneState(5, False, False, False, True, False),
     )
     app.processEvents()
     assert idle_events == []
@@ -223,7 +225,7 @@ def test_monitor_worker_idle_status_requires_actual_chime(app, tmp_path):
 
     worker._handle_drone_state(
         detector,
-        DroneState(5, False, False, True, True),
+        DroneState(5, False, False, False, True, True),
     )
     app.processEvents()
     assert idle_events == [True]
@@ -231,7 +233,7 @@ def test_monitor_worker_idle_status_requires_actual_chime(app, tmp_path):
 
     worker._handle_drone_state(
         detector,
-        DroneState(4, False, False, False, False),
+        DroneState(4, False, False, False, False, False),
     )
     app.processEvents()
     assert statuses == ["idle", ""]
@@ -239,7 +241,7 @@ def test_monitor_worker_idle_status_requires_actual_chime(app, tmp_path):
     worker._paused.set()
     worker._handle_drone_state(
         detector,
-        DroneState(5, False, False, True, True),
+        DroneState(5, False, False, False, True, True),
     )
     app.processEvents()
     assert idle_events == [True]
@@ -259,13 +261,13 @@ def test_update_drone_detector_rebuilds_and_destroys(app, tmp_path):
         "drone",
         {
             "enabled": True,
-            "count": 3,
+            "idle_delay": 10,
             "roi": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
         },
     )
     _, first = worker.update_drone_detector()
     assert first is not None
-    assert first.count == 3
+    assert first.idle_delay_seconds == 10.0
     _, unchanged = worker.update_drone_detector()
     assert unchanged is first
 
@@ -274,13 +276,13 @@ def test_update_drone_detector_rebuilds_and_destroys(app, tmp_path):
         "drone",
         {
             "enabled": True,
-            "count": 4,
+            "idle_delay": 20,
             "roi": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
         },
     )
-    _, count_changed = worker.update_drone_detector()
-    assert count_changed is not first
-    assert count_changed.count == 4
+    _, delay_changed = worker.update_drone_detector()
+    assert delay_changed is not first
+    assert delay_changed.idle_delay_seconds == 20.0
     assert worker._drone_idle_alert_active is False
 
     worker._drone_idle_alert_active = True
@@ -288,19 +290,19 @@ def test_update_drone_detector_rebuilds_and_destroys(app, tmp_path):
         "drone",
         {
             "enabled": True,
-            "count": 4,
+            "idle_delay": 20,
             "roi": {"x": 0.2, "y": 0.3, "width": 0.4, "height": 0.2},
         },
     )
     _, roi_changed = worker.update_drone_detector()
-    assert roi_changed is not count_changed
+    assert roi_changed is not delay_changed
     assert worker._drone_idle_alert_active is False
 
     config.update(
         "drone",
         {
             "enabled": False,
-            "count": 4,
+            "idle_delay": 20,
             "roi": {"x": 0.2, "y": 0.3, "width": 0.4, "height": 0.2},
         },
     )
@@ -386,16 +388,20 @@ def test_drone_dialog_selection_only_writes_drone_roi(app, tmp_path, monkeypatch
     dialog.close()
 
 
-def test_drone_dialog_applies_count_and_enabled(app, tmp_path, monkeypatch):
+def test_drone_dialog_applies_idle_delay_and_enabled(app, tmp_path, monkeypatch):
     monkeypatch.setattr("ui.drone_dialog.Capture", _ClosedCapture)
     config = ConfigManager(tmp_path / "config.json")
     dialog = DroneDialog(config, tmp_path, target_handle=1)
-    assert dialog.count_spin.minimum() == 1
-    assert dialog.count_spin.maximum() == 5
-    dialog.count_spin.setValue(3)
+    assert not hasattr(dialog, "count_spin")
+    assert dialog.delay_spin.minimum() == 1
+    assert dialog.delay_spin.maximum() == 120
+    assert dialog.delay_spin.suffix() == " 秒"
+    assert dialog.delay_spin.value() == 10
+    dialog.delay_spin.setValue(30)
     dialog.enable_check.setChecked(True)
     dialog._apply()
-    assert config.data["drone"]["count"] == 3
+    assert config.data["drone"]["idle_delay"] == 30
+    assert "count" not in config.data["drone"]
     assert config.data["drone"]["enabled"] is True
 
 
@@ -526,7 +532,7 @@ def test_enabled_drone_config_is_passed_to_worker(app, tmp_path, monkeypatch):
             "drone",
             {
                 "enabled": True,
-                "count": 3,
+                "idle_delay": 30,
                 "roi": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
             },
         )
@@ -538,6 +544,6 @@ def test_enabled_drone_config_is_passed_to_worker(app, tmp_path, monkeypatch):
         panel._start_monitor()
         assert isinstance(panel._worker, _StubWorker)
         assert panel._worker.kwargs["drone_config"]["enabled"] is True
-        assert panel._worker.kwargs["drone_config"]["count"] == 3
+        assert panel._worker.kwargs["drone_config"]["idle_delay"] == 30
     finally:
         panel.close()

@@ -485,7 +485,7 @@ nuitka --standalone --enable-plugin=pyside6 --windows-console-mode=disable `
 {
   "drone": {
     "enabled": false,
-    "count": 5,
+    "idle_delay": 10,
     "roi": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
     "idle_sound": "assets/drone_idle.wav",
     "alert_sound": "assets/drone_alert.wav"
@@ -494,28 +494,28 @@ nuitka --standalone --enable-plugin=pyside6 --windows-console-mode=disable `
 }
 ```
 
-旧配置由深度合并自动补全。`drone.count` 在加载时钳制到 1–5；无人机 ROI 任一坐标非数字、越界或宽高不大于 0 时规整为零 ROI；`overlay.x/y` 只接受整数，其他类型转为 `null`。
+旧配置由深度合并自动补全。`drone.idle_delay` 规整为整数并钳制到 1–120 秒，非法值回退默认 10；旧版 `drone.count` 直接丢弃。无人机 ROI 任一坐标非数字、越界或宽高不大于 0 时规整为零 ROI；`overlay.x/y` 只接受整数，其他类型转为 `null`。
 
 ### 11.2 接口与线程边界
 
 - `Capture.grab_regions(hwnd, regions)` 返回与 `regions` 等长的裁剪帧列表；优先一次整窗 PrintWindow，渲染失败后逐区域 mss 回退。
-- `DroneDetector.update(frame_bgr)` 返回 `DroneState`，内部维护空闲确认、`combat && damaged` 报警连续帧和战斗锁存；战斗后全部空闲需持续满内置 `IDLE_ALERT_DELAY_SECONDS = 10.0` 秒且无战斗、无红血条才发出 `idle_chime`，中途中断会重新计时。该延迟不暴露为配置项；`update(None)` 与极小 / 空帧安全返回 false 状态。
+- `DroneDetector.update(frame_bgr)` 返回 `DroneState(idle_count, combat, returning, damaged, all_idle, idle_chime)`，内部维护空闲确认与 `combat && damaged` 报警连续帧。存在有效空闲行且没有战斗 / 返回中时开始确认；`all_idle` 持续 `idle_delay_seconds`（来自 `drone.idle_delay`，默认 10 秒、范围 1–120）后发出一次 `idle_chime`，不要求之前发生过战斗，中途中断会重新计时。`update(None)` 与极小 / 空帧安全返回全 false 状态。
 - `MonitorWorker` 新增 `flight_state(str)`、`drone_idle()`、`drone_damaged(bool)`、`drone_status(str)`。`idle_chime` 事件始终由检测器消费，但暂停期间不发 `drone_idle`，恢复后不补响；`drone_damaged` 由 `damage_alarm_active()` 驱动，只在「战斗中 + 红血条」连续 2 帧后进入，脱离战斗状态立即退出。`drone_status` 只在值变化时发送，优先级为 `damage_alarm_active()` → `"damaged"`，其次 `_drone_idle_alert_active` → `"idle"`，否则 `""`。`_drone_idle_alert_active` 仅在未被暂停拦截的 `idle_chime` 真正播放时置真，单纯 `all_idle=True` 不显示空闲状态。
 - `FlightStatusOverlay` 接收 `drone_status` 后显示第二行「无人机：空闲」（绿色、普通 11pt）或「无人机：受损」（红色、加粗 12pt）；空值隐藏。受损状态只在 `damage_alarm_active()` 为真时显示。窗口隐藏该行时为 200×54，显示时为 200×74，尺寸切换后重新钳制屏幕位置。主面板缓存 `_drone_state`，悬浮窗重新显示时立即应用缓存。
 - `SoundPlayer` 由主面板在 GUI 线程持有；禁止在监控线程直接创建 QtMultimedia 对象。offscreen 或没有 `QCoreApplication` 时所有播放方法静默返回。
-- `DroneDialog` 的框选只更新 `drone.roi`，不修改敌对 `roi`。打开、应用或关闭无人机设置均不停止、不重启敌对监控；对话框的 150 ms 整窗预览和 `MonitorWorker` 的 PrintWindow 使用各自独立的 `Capture` 实例并发运行。
+- `DroneDialog` 的框选只更新 `drone.roi`，不修改敌对 `roi`；设置项为「空闲提示延时」QSpinBox（1–120 秒，后缀「 秒」），应用时写入 `drone.idle_delay`。打开、应用或关闭无人机设置均不停止、不重启敌对监控；对话框的 150 ms 整窗预览和 `MonitorWorker` 的 PrintWindow 使用各自独立的 `Capture` 实例并发运行。
 
 ### 11.3 无人机识别实现
 
-- **模板资源**：默认目录为 `assets_dir() / "assets" / "drone_templates"`，可用 `DroneDetector(..., templates_dir=Path(...))` 覆盖。`tools/extract_drone_templates.py` 与检测器共用 `build_color_masks()`、`find_text_clusters()` 和 `prepare_text_mask()`：空闲取样例第 3 行、战斗取第 1 行，输出 46×18 / 52×18 的单通道 0/255 PNG。
-- **颜色掩码**：green 为 `H∈[40,80], S≥70, V≥80`；red 为 `H≤10` 或 `H≥170` 且 `S≥120, V≥90`；white 为 `S≤60, V≥140`。无人机 ROI 不做下采样。
-- **文字簇**：green / red 掩码先以 `MORPH_CLOSE` 和 `1×2` 核合并纵向断裂，再取连通域；水平间距不超过 6 px 且垂直区间相交的框合并。过滤后仅保留高度 ≥6、宽高比 `1.8–4.2` 的文字簇。
-- **模板匹配**：green 只对 `idle.png`、red 只对 `combat.png` 匹配。模板同时缩放到簇高度 `h` 与 `h-1`，保持宽高比并使用 `INTER_AREA`；样本和模板分别做 `3×3 GaussianBlur`，再用 `TM_CCOEFF_NORMED` 取最高分。`TEXT_MATCH_THRESHOLD = 0.45` 覆盖 0.5–1.5 倍实测缩放，0.7 倍末行最低约 0.49。
-- **血条与行绑定**：white / red 连通域满足高度 ≤12、宽度 ≥6、宽高比 ≥2.5 时作为血条段。真实血条必须在文字右侧，横向满足 `bar.x0 >= text.x1 + 2`，垂直中心差不超过 `0.7 × 文字高度`。文字模板匹配和不小于一条绑定血条必须同时成立，该行才计入 `idle_count` 或 `combat`。
+- **模板资源**：默认目录为 `assets_dir() / "assets" / "drone_templates"`，可用 `DroneDetector(..., templates_dir=Path(...))` 覆盖，并要求 `idle.png` / `combat.png` / `return.png` 全部存在。`tools/extract_drone_templates.py` 与检测器共用 `build_color_masks()`、`find_text_clusters()` 和 `prepare_text_mask()`：空闲取样例第 3 行、战斗与返回取样例第 1 行，输出 46×18 / 52×18 / 53×18 的单通道 0/255 PNG。
+- **颜色掩码**：green 为 `H∈[40,80], S≥70, V≥80`；red 为 `H≤10` 或 `H≥170` 且 `S≥120, V≥90`；orange 为 `H∈[12,35], S≥100, V≥80`；white 为 `S≤60, V≥140`。无人机 ROI 不做下采样。
+- **文字簇**：green / red / orange 掩码先以 `MORPH_CLOSE` 和 `1×2` 核合并纵向断裂，再取连通域；水平间距不超过 6 px 且垂直区间相交的框合并。过滤后仅保留高度 ≥6、宽高比 `1.8–4.2` 的文字簇。
+- **模板匹配**：green 只对 `idle.png`、red 只对 `combat.png`、orange 只对 `return.png` 匹配。模板同时缩放到簇高度 `h` 与 `h-1`，保持宽高比并使用 `INTER_AREA`；样本和模板分别做 `3×3 GaussianBlur`，再用 `TM_CCOEFF_NORMED` 取最高分。`TEXT_MATCH_THRESHOLD = 0.45` 覆盖 0.5–1.5 倍实测缩放，0.7 倍末行最低约 0.49。
+- **血条与行绑定**：white / red 连通域满足高度 ≤12、宽度 ≥6、宽高比 ≥2.5 时作为血条段。真实血条必须在文字右侧，横向满足 `bar.x0 >= text.x1 + 2`，垂直中心差不超过 `0.7 × 文字高度`。文字模板匹配和不小于一条绑定血条必须同时成立，该行才计入 `idle_count`、`combat` 或 `returning`。
 - **`damaged` 与报警**：有效 combat 行绑定红色血条时 `damaged=True`。没有有效 combat 行时，独立红色血条可令 `state.damaged=True` 以保留纯红血条状态；但 `damage_alarm_active()` 仍严格要求 `combat && damaged` 连续达到 `damage_frames`，所以纯红血条、纯战斗文字和小尺度文字笔画均不会启动急促报警。
-- **降级路径**：`idle.png` 或 `combat.png` 缺失 / 不可读时不抛异常，记录一次 warning。空闲降级为「绿色扫描行像素 ≥8 且右侧绑定血条」，战斗降级为「红色文字候选高度 ≥9 且右侧绑定血条」；文字笔画伪血条仍通过横向间隙和独立血条判定排除。
-- **时序状态**：有效空闲行数达到配置数量后连续 `confirm_frames` 帧才置 `all_idle`。发生战斗 / 红血条会锁存 `_combat_seen=True`；恢复全部空闲后仍需无战斗、无红血条持续 10 秒才发出一次 `idle_chime`，中断会清零计时。急促报警独立使用 `_alarm_streak`，不改变既有 10 秒空闲提示语义。
-- **配置热更新**：`MonitorWorker.update_drone_detector()` 每帧读取最新 `config.data["drone"]`，将 `enabled`、规整后的 `count` 和 `roi` 组成配置键。键变化时重置 `_drone_idle_alert_active`、受损边沿和悬浮状态，再按最新数量重建 `DroneDetector`；`enabled=False` 时把检测器设为 `None` 并停止后续无人机抓屏。构造参数 `drone_config` 仅保留为兼容回退，不再作为唯一配置来源。
+- **降级路径**：任一模板缺失 / 不可读时不抛异常，记录一次 warning。空闲降级为「绿色扫描行像素 ≥8 且右侧绑定血条」，战斗 / 返回分别降级为「红色 / 橙色文字候选高度 ≥9 且右侧绑定血条」；文字笔画伪血条仍通过横向间隙和独立血条判定排除。
+- **时序状态**：`all_idle = idle_count >= 1 and not combat and not returning`，需连续 `confirm_frames` 帧确认。没有无人机数量阈值，也不锁存或要求之前发生战斗。`all_idle` 连续保持 `idle_delay_seconds` 后发出一次 `idle_chime`，`_idle_chime_fired` 防止持续空闲重复播放；出现非空闲、战斗或返回中会清零 `_all_idle_since` 与 fired。急促报警独立使用 `_alarm_streak`。
+- **配置热更新**：`MonitorWorker.update_drone_detector()` 每帧读取最新 `config.data["drone"]`，将 `enabled`、规整后的 `idle_delay` 和 `roi` 组成配置键。键变化时重置 `_drone_idle_alert_active`、受损边沿和悬浮状态，再按最新延时构造 `DroneDetector(idle_delay_seconds=...)`；`enabled=False` 时把检测器设为 `None` 并停止后续无人机抓屏。构造参数 `drone_config` 仅保留为兼容回退，不再作为唯一配置来源。
 
 ### 11.4 监控信号拦截与悬浮窗生命周期
 
@@ -528,4 +528,4 @@ nuitka --standalone --enable-plugin=pyside6 --windows-console-mode=disable `
 
 - `tools/gen_sounds.py` 生成 44100 Hz / 16 bit / 单声道 WAV，不使用随机数或时间戳，重复执行输出一致。
 - `tools/drone_probe.py <目录> [--scale 倍数]` 将样例按比例 resize 后连续喂入各 5 帧并输出 JSON，默认 `1.0`；用于验证 0.5–1.5 倍下的空闲行数、战斗迹象与红血条区分。
-- 测试使用真实模板合成无人机行，覆盖字样 + 血条双确认、无血条拒绝、实心色块拒绝、0.5–1.3 倍模板缩放、白 / 红血条区分、模板缺失降级、10 秒空闲时序、空闲状态仅在真实播报时显示、配置热重建 / 销毁、无人机设置不打断监控、悬浮窗三种状态、面板状态转发及未监控旧信号拦截。
+- 测试使用真实模板合成无人机行，覆盖空闲 / 战斗 / 返回三模板与血条双确认、无血条拒绝、实心色块拒绝、多尺度模板缩放、白 / 红血条区分、模板缺失降级、无战斗也提示、战斗 / 返回阻断空闲、可配置延时与只响一次、空闲状态仅在真实播报时显示、配置热重建 / 销毁、无人机设置不打断监控、悬浮窗三种状态、面板状态转发及未监控旧信号拦截。

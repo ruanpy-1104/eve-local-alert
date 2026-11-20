@@ -1,7 +1,7 @@
 """无人机状态识别。
 
-直接分析无人机列表原始像素，不做下采样。绿色 / 红色文字簇必须匹配对应字样
-模板，并在同一行右侧找到血条，才计为有效无人机行。
+直接分析无人机列表原始像素，不做下采样。绿色 / 红色 / 橙色文字簇必须匹配
+对应字样模板，并在同一行右侧找到血条，才计为有效无人机行。
 """
 from __future__ import annotations
 
@@ -22,12 +22,13 @@ logger = get_logger(__name__)
 class DroneState:
     idle_count: int
     combat: bool
+    returning: bool
     damaged: bool
     all_idle: bool
     idle_chime: bool
 
 
-_EMPTY_STATE = DroneState(0, False, False, False, False)
+_EMPTY_STATE = DroneState(0, False, False, False, False, False)
 IDLE_ALERT_DELAY_SECONDS = 10.0
 
 # 0.45 覆盖 0.5–1.5 倍实测下限；0.7 倍末行最低约 0.49，
@@ -48,6 +49,8 @@ _RED_LOWER_1 = np.array([0, 120, 90], dtype=np.uint8)
 _RED_UPPER_1 = np.array([10, 255, 255], dtype=np.uint8)
 _RED_LOWER_2 = np.array([170, 120, 90], dtype=np.uint8)
 _RED_UPPER_2 = np.array([179, 255, 255], dtype=np.uint8)
+_ORANGE_LOWER = np.array([12, 100, 80], dtype=np.uint8)
+_ORANGE_UPPER = np.array([35, 255, 255], dtype=np.uint8)
 _WHITE_LOWER = np.array([0, 0, 140], dtype=np.uint8)
 _WHITE_UPPER = np.array([179, 60, 255], dtype=np.uint8)
 
@@ -67,16 +70,17 @@ def to_bgr(frame: np.ndarray) -> np.ndarray | None:
 
 def build_color_masks(
     frame_bgr: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """返回检测器使用的 green / red / white 二值掩码。"""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """返回检测器使用的 green / red / orange / white 二值掩码。"""
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     green = cv2.inRange(hsv, _GREEN_LOWER, _GREEN_UPPER)
     red = cv2.bitwise_or(
         cv2.inRange(hsv, _RED_LOWER_1, _RED_UPPER_1),
         cv2.inRange(hsv, _RED_LOWER_2, _RED_UPPER_2),
     )
+    orange = cv2.inRange(hsv, _ORANGE_LOWER, _ORANGE_UPPER)
     white = cv2.inRange(hsv, _WHITE_LOWER, _WHITE_UPPER)
-    return green, red, white
+    return green, red, orange, white
 
 
 def _merge_boxes(
@@ -226,17 +230,12 @@ class DroneDetector:
 
     def __init__(
         self,
-        count: int = 5,
         confirm_frames: int = 3,
         damage_frames: int = 2,
         idle_delay_seconds: float = IDLE_ALERT_DELAY_SECONDS,
         clock=None,
         templates_dir: str | Path | None = None,
     ):
-        try:
-            self.count = max(1, min(5, int(count)))
-        except (TypeError, ValueError, OverflowError):
-            self.count = 5
         try:
             self.confirm_frames = max(1, int(confirm_frames))
         except (TypeError, ValueError, OverflowError):
@@ -263,11 +262,11 @@ class DroneDetector:
 
     def _load_templates(self) -> None:
         templates: dict[str, np.ndarray] = {}
-        for key in ("idle", "combat"):
+        for key in ("idle", "combat", "return"):
             template = _load_binary_template(self._templates_dir / f"{key}.png")
             if template is not None:
                 templates[key] = template
-        if len(templates) == 2:
+        if len(templates) == 3:
             self._templates = templates
             self._using_templates = True
             return
@@ -281,11 +280,11 @@ class DroneDetector:
             )
 
     def reset(self) -> None:
-        """清除连续帧计数、战斗锁存与一次性事件。"""
+        """清除连续帧计数、空闲计时与一次性事件。"""
         self._idle_streak = 0
         self._alarm_streak = 0
-        self._combat_seen = False
         self._all_idle_since: float | None = None
+        self._idle_chime_fired = False
 
     def damage_alarm_active(self) -> bool:
         """「战斗中 + 红血条」是否已达到连续帧确认。"""
@@ -298,10 +297,12 @@ class DroneDetector:
             self._idle_streak = 0
             self._alarm_streak = 0
             self._all_idle_since = None
+            self._idle_chime_fired = False
             return _EMPTY_STATE
 
-        idle_count, combat, damaged = analysis
-        if idle_count >= self.count:
+        idle_count, combat, returning, damaged = analysis
+        idle_present = idle_count >= 1 and not combat and not returning
+        if idle_present:
             self._idle_streak += 1
         else:
             self._idle_streak = 0
@@ -311,27 +312,26 @@ class DroneDetector:
         else:
             self._alarm_streak = 0
 
-        if combat or damaged:
-            self._combat_seen = True
-
         all_idle = self._idle_streak >= self.confirm_frames
         idle_chime = False
-        if not all_idle or combat or damaged:
+        if not all_idle:
             self._all_idle_since = None
+            self._idle_chime_fired = False
         else:
             now = self._clock()
             if self._all_idle_since is None:
                 self._all_idle_since = now
             if (
-                self._combat_seen
+                not self._idle_chime_fired
                 and now - self._all_idle_since >= self.idle_delay_seconds
             ):
                 idle_chime = True
-                self._combat_seen = False
+                self._idle_chime_fired = True
 
         return DroneState(
             idle_count=idle_count,
             combat=combat,
+            returning=returning,
             damaged=damaged,
             all_idle=all_idle,
             idle_chime=idle_chime,
@@ -366,8 +366,10 @@ class DroneDetector:
                 best = max(best, float(np.max(score)))
         return max(0.0, best) if best > -1.0 else 0.0
 
-    def _analyze(self, frame_bgr: np.ndarray | None) -> tuple[int, bool, bool] | None:
-        """返回 ``(空闲行数, 战斗中, 红色血条)``；无效帧返回 None。"""
+    def _analyze(
+        self, frame_bgr: np.ndarray | None
+    ) -> tuple[int, bool, bool, bool] | None:
+        """返回 ``(空闲行数, 战斗中, 返回中, 红色血条)``。"""
         if not isinstance(frame_bgr, np.ndarray) or frame_bgr.size == 0:
             return None
         if frame_bgr.ndim not in (2, 3):
@@ -379,11 +381,13 @@ class DroneDetector:
             bgr = to_bgr(frame_bgr)
             if bgr is None:
                 return None
-            green, red, white = build_color_masks(bgr)
+            green, red, orange, white = build_color_masks(bgr)
             white_bars = find_bar_components(white)
             red_bars = find_bar_components(red)
             if not self._using_templates:
-                return self._analyze_fallback(green, red, white_bars, red_bars)
+                return self._analyze_fallback(
+                    green, red, orange, white_bars, red_bars
+                )
 
             idle_count = 0
             for x0, y0, x1, y1 in find_text_clusters(green):
@@ -426,7 +430,21 @@ class DroneDetector:
                 # 无战斗字样时保留纯红血条告警状态，但排除小尺度文字自身
                 # 被宽高比规则误判成的“血条”。
                 damaged = _standalone_red_bar_exists(red_bars, red_clusters)
-            return idle_count, combat, damaged
+
+            returning = False
+            for x0, y0, x1, y1 in find_text_clusters(orange):
+                crop = orange[y0 : y1 + 1, x0 : x1 + 1]
+                score = self._match_text(crop, self._templates["return"])
+                if score < TEXT_MATCH_THRESHOLD:
+                    continue
+                text = (x0, y0, x1, y1)
+                text_height = y1 - y0 + 1
+                if any(
+                    _bar_belongs_to_text(text, bar, text_height)
+                    for bar in (*white_bars, *red_bars)
+                ):
+                    returning = True
+            return idle_count, combat, returning, damaged
         except Exception:
             logger.debug("无人机帧分析失败", exc_info=True)
             return None
@@ -435,9 +453,10 @@ class DroneDetector:
     def _analyze_fallback(
         green: np.ndarray,
         red: np.ndarray,
+        orange: np.ndarray,
         white_bars: list[tuple[int, int, int, int]],
         red_bars: list[tuple[int, int, int, int]],
-    ) -> tuple[int, bool, bool]:
+    ) -> tuple[int, bool, bool, bool]:
         """模板不可用时，以颜色行 + 右侧血条作为兼容降级路径。"""
         idle_count = 0
         row_counts = np.count_nonzero(green, axis=1)
@@ -484,4 +503,16 @@ class DroneDetector:
                 damaged = True
         if not valid_combat:
             damaged = _standalone_red_bar_exists(red_bars, red_clusters)
-        return idle_count, combat, damaged
+
+        returning = False
+        for cluster in find_text_clusters(orange):
+            _x0, y0, _x1, y1 = cluster
+            text_height = y1 - y0 + 1
+            if text_height < 9:
+                continue
+            if any(
+                _bar_belongs_to_text(cluster, bar, text_height)
+                for bar in (*white_bars, *red_bars)
+            ):
+                returning = True
+        return idle_count, combat, returning, damaged

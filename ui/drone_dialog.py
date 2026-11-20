@@ -99,16 +99,19 @@ class DroneDialog(QDialog):
         )
         options.addWidget(self.enable_check)
 
-        count_label = QLabel("无人机数量")
-        options.addWidget(count_label)
-        self.count_spin = QSpinBox()
-        self.count_spin.setRange(1, 5)
+        delay_label = QLabel("空闲提示延时")
+        options.addWidget(delay_label)
+        self.delay_spin = QSpinBox()
+        self.delay_spin.setRange(1, 120)
+        self.delay_spin.setSuffix(" 秒")
         try:
-            count = int((self.config.data.get("drone") or {}).get("count", 5))
-        except (TypeError, ValueError):
-            count = 5
-        self.count_spin.setValue(max(1, min(5, count)))
-        options.addWidget(self.count_spin)
+            idle_delay = int(
+                (self.config.data.get("drone") or {}).get("idle_delay", 10)
+            )
+        except (TypeError, ValueError, OverflowError):
+            idle_delay = 10
+        self.delay_spin.setValue(max(1, min(120, idle_delay)))
+        options.addWidget(self.delay_spin)
         options.addStretch(1)
 
         self.idle_test_btn = QPushButton("试听提示音")
@@ -222,7 +225,7 @@ class DroneDialog(QDialog):
             "drone",
             {
                 "enabled": self.enable_check.isChecked(),
-                "count": self.count_spin.value(),
+                "idle_delay": self.delay_spin.value(),
                 "roi": {
                     "x": self._roi.x,
                     "y": self._roi.y,

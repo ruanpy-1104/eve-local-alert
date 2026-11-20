@@ -5,9 +5,9 @@
 
     红 (191,0,0)   橙 (255,89,0)   黄 (255,178,0)   灰白 (178,178,178)
 
-其余 8 种（绿 / 青绿 / 深青 / 蓝 / 天蓝 / 紫 / 品红 / 黑）已移除：紫与品红在 HSV 上
-几乎重合、黑在深色总览背景上无法与背景分离（掩码会与背景连成一块），其余冷色与
-「红名预警」场景无关，列出只会让「颜色选择」变成多选题海。
+其余 UI 预设（绿 / 青绿 / 深青 / 蓝 / 天蓝 / 紫 / 品红 / 黑）仍不进入颜色选择器。
+检测器另有内部 ``CLASSIFIER_COLORS``，仅用蓝 / 绿 / 紫方格建立总览网格；它们不会
+成为可选警报颜色，也不会触发报警。
 
 两条关键约定：
 
@@ -35,6 +35,24 @@ EVE_COLORS: dict[str, dict] = {
         "v_loose": 88,  # 宽松时明度下限（下探以捕获较暗的中立灰白图标 V≈107–138）
         "v_strict": 100,  # 严格时明度下限（仍能捕获中立图标，仅排除更暗灰底）
     },
+}
+
+# 方格分类使用的完整调色板。前四种与 EVE_COLORS / UI 语义一致；蓝、绿、紫只用于
+# 识别友军方格以建立网格，不会出现在颜色选择器或默认警报颜色中。
+CLASSIFIER_COLORS: dict[str, dict] = {
+    "red": {"hue": 0, "role": "hostile"},
+    "orange": {"hue": 10, "role": "hostile"},
+    "yellow": {"hue": 21, "role": "hostile"},
+    "gray_white": {"hue": None, "role": "hostile"},
+    "blue": {"hue": 113, "role": "friendly"},
+    "green": {"hue": 60, "role": "friendly"},
+    "purple": {"hue": 138, "role": "friendly"},
+}
+
+# 用户配置兼容别名。公开 UI 仍使用 gray_white；检测器也接受 white。
+COLOR_ALIASES: dict[str, str] = {
+    "gray_white": "gray_white",
+    "white": "gray_white",
 }
 
 # UI 展示顺序（色相环由红到黄，灰白收尾）

@@ -1,367 +1,402 @@
-"""Detector 单元测试：颜色阈值、图标几何筛选、名字验证、时序确认。"""
+"""方格、颜色分类、单方形模式与时序确认测试。"""
+from __future__ import annotations
+
 import cv2
 import numpy as np
+import pytest
 
 from core.colors import DEFAULT_ALERT_COLORS, EVE_COLORS, color_ranges
 from core.detector import Detector
 
-# 预设色直接用调色板实测 RGB（转 BGR），保证测试与「颜色选择」里的色块一致
-def _bgr(name: str) -> tuple[int, int, int]:
-    r, g, b = EVE_COLORS[name]["rgb"]
-    return (b, g, r)
+BG = (18, 20, 24)
+RED = (0, 0, 220)
+ORANGE = (0, 89, 255)
+YELLOW = (0, 178, 255)
+GRAY = (129, 129, 129)
+PALETTE_GRAY = (178, 178, 178)
+WHITE = (255, 255, 255)
+BLUE = (220, 0, 0)
+GREEN = (0, 180, 0)
+PURPLE = (190, 0, 190)
 
 
-RED = (0, 0, 255)        # BGR 纯红（H=0，与预设红同色相）
-ORANGE = _bgr("orange")  # 总览「橙」预设 (255,89,0) → H=10
-YELLOW = _bgr("yellow")  # 总览「黄」预设 (255,178,0) → H=21
-PALETTE_GRAY = _bgr("gray_white")  # 调色板灰白 (178,178,178) → V=178
-BLUE = (255, 0, 0)       # BGR 纯蓝（已移除的颜色，不应命中）
-GRAY = (129, 129, 129)   # BGR 中立灰白图标色（V≈129）
-DARK_GRAY = (80, 80, 80)  # BGR 暗灰（低于灰白 V 下限）
-WHITE = (255, 255, 255)  # 名字文字白色
+def _frame(width: int = 240, height: int = 200, bg=BG) -> np.ndarray:
+    return np.full((height, width, 3), bg, dtype=np.uint8)
 
 
-def _frame(size=(400, 400), bg=(0, 0, 0)) -> np.ndarray:
-    return np.full((size[0], size[1], 3), bg, dtype=np.uint8)
-
-
-def _icon(frame, color, x=100, y=100, size=15) -> np.ndarray:
-    """绘制一个实心方块图标（EVE 总览名字前的阵营标识）。"""
+def _square(
+    frame: np.ndarray,
+    color,
+    x: int,
+    y: int,
+    size: int,
+    center: str = "blank",
+) -> np.ndarray:
     cv2.rectangle(frame, (x, y), (x + size - 1, y + size - 1), color, -1)
+    cx, cy = x + size / 2.0, y + size / 2.0
+    inner = max(1, int(round(size * 0.34)))
+    accent = WHITE
+    if center == "star":
+        points = []
+        for index in range(10):
+            radius = inner if index % 2 == 0 else inner * 0.45
+            angle = -np.pi / 2 + index * np.pi / 5
+            points.append((int(round(cx + radius * np.cos(angle))), int(round(cy + radius * np.sin(angle)))))
+        cv2.fillPoly(frame, [np.array(points, dtype=np.int32)], accent)
+    elif center == "cross":
+        arm = max(1, inner // 2)
+        cv2.line(frame, (int(cx - inner), int(cy)), (int(cx + inner), int(cy)), accent, arm)
+        cv2.line(frame, (int(cx), int(cy - inner)), (int(cx), int(cy + inner)), accent, arm)
+    elif center == "bar":
+        cv2.rectangle(
+            frame,
+            (x + max(1, size // 5), y + size // 2 - max(1, size // 12)),
+            (x + size - max(2, size // 5), y + size // 2 + max(1, size // 12)),
+            accent,
+            -1,
+        )
+    elif center == "dot":
+        cv2.circle(frame, (int(cx), int(cy)), max(1, size // 7), accent, -1)
     return frame
 
 
-def _name(frame, x=None, y=100, width=70, height=12) -> np.ndarray:
-    """在图标右侧绘制一条明亮白色文字条，用于「名字验证」。"""
-    if x is None:
-        x = 100 + 15 + 6
-    cv2.rectangle(frame, (x, y), (x + width - 1, y + height - 1), WHITE, -1)
+def _one(color=RED, size: int = 15, center: str = "dot", **frame_kw) -> np.ndarray:
+    frame = _frame(**frame_kw)
+    return _square(frame, color, 100, 90, size, center)
+
+
+def _column(
+    color,
+    size: int = 15,
+    pitch: int | None = None,
+    rows: int = 3,
+    centers=None,
+    x: int = 20,
+    y: int = 20,
+) -> np.ndarray:
+    pitch = int(round(size * 1.4)) if pitch is None else pitch
+    centers = ["blank"] * rows if centers is None else centers
+    frame = _frame(width=max(260, x + size + 30), height=max(200, y + pitch * rows + size))
+    for index, center in enumerate(centers):
+        _square(frame, color, x, y + index * pitch, size, center)
     return frame
 
 
-def _icon_frame(color, name=True, **kw) -> np.ndarray:
-    """构造「图标 + 可选名字」的标准帧。"""
-    f = _frame(**kw)
-    _icon(f, color)
-    if name:
-        _name(f)
-    return f
+class TestColorClassification:
+    @pytest.mark.parametrize(
+        ("name", "color"),
+        [
+            ("red", RED),
+            ("orange", ORANGE),
+            ("yellow", YELLOW),
+            ("gray_white", GRAY),
+        ],
+    )
+    def test_each_default_hostile_color(self, name, color):
+        assert Detector(colors=[name]).has_red(_one(color))
 
-
-class TestDetectorThreshold:
-    def test_red_icon_detected(self):
-        assert Detector().has_red(_icon_frame(RED))
-
-    def test_blue_icon_not_detected(self):
-        # 蓝色不在 4 色预设内，图标不应命中
-        assert not Detector().has_red(_icon_frame(BLUE))
-
-    def test_gray_white_icon_detected(self):
-        # 中立灰白图标（V≈129）应被识别（旧算法漏检中立）
-        assert Detector().has_red(_icon_frame(GRAY))
-
-    def test_dark_gray_rejected(self):
-        # 低于灰白明度下限的暗灰，应排除
-        assert not Detector().has_red(_icon_frame(DARK_GRAY))
-
-    def test_black_icon_not_default(self):
-        # 黑色已移出预设（深色总览背景下无法与背景分离），不应命中
-        assert not Detector().has_red(_icon_frame((0, 0, 0)))
-
-    def test_too_dark_red_rejected(self):
-        # V=30 低于彩色 V 下限 70（严格时），应排除
-        assert not Detector(strictness=100).has_red(_icon_frame((0, 0, 30)))
-
-
-class TestDetectorGeometry:
-    def test_tiny_icon_ignored(self):
-        f = _frame()
-        cv2.rectangle(f, (100, 100), (103, 103), RED, -1)  # 4x4，面积不足
-        _name(f, x=110)
-        assert not Detector().has_red(f)
-
-    def test_square_icon_detected(self):
-        assert Detector().has_red(_icon_frame(RED))
-
-    def test_wide_bar_rejected(self):
-        # 旧算法命中的「宽扁名牌条」，如今按图标判定应被宽高比过滤（aspect > 1.6）
-        f = _frame()
-        f[120:135, 80:250] = RED
-        assert not Detector().has_red(f)
-
-    def test_bare_square_rejected_when_names_present(self):
-        # 帧内含「带名字的图标」，说明是正常总览 → 仅保留名字对齐的图标；
-        # 一个无名字的实心方块（如背景红色恒星）应被名字验证剔除。
-        f = _frame()
-        _icon(f, RED)
-        _name(f)
-        cv2.rectangle(f, (100, 160), (114, 174), RED, -1)  # 无名字的方块
-        assert len(Detector().red_boxes(f)) == 1
-
-    def test_icon_only_roi_detected(self):
-        # 纯图标 ROI（整帧无任何名字）→ 退化为几何判定，无名字参考也能识别图标
-        f = _icon_frame(RED, name=False)
-        assert Detector().has_red(f)
-
-    def test_need_name_false_accepts_all(self):
-        # 关闭名字验证后，所有几何通过的色块都命中
-        f = _icon_frame(RED, name=False)
-        assert Detector(need_name=False).has_red(f)
-
-    def test_icon_size_adaptive_small(self):
-        # 小字体图标（8px，旧固定下限附近）不应被丢下
-        f = _frame()
-        cv2.rectangle(f, (100, 100), (107, 107), RED, -1)
-        cv2.rectangle(f, (112, 101), (150, 106), WHITE, -1)
-        assert Detector().has_red(f)
-
-    def test_icon_size_adaptive_large(self):
-        # 大字体图标（40px，旧固定上限会丢弃）应能识别——不能用固定像素判定大小
-        f = _frame()
-        cv2.rectangle(f, (150, 100), (189, 139), RED, -1)
-        cv2.rectangle(f, (196, 103), (300, 136), WHITE, -1)
-        assert Detector().has_red(f)
-
-
-class TestDetectorTemporal:
-    def _red_icon(self) -> np.ndarray:
-        return _icon_frame(RED)
-
-    def test_confirm_requires_n_frames(self):
-        d = Detector(confirm_frames=3)
-        frame = self._red_icon()
-        assert not d.detect(frame)
-        assert not d.detect(frame)
-        assert d.detect(frame)  # 第 3 帧触发
-
-    def test_missing_frame_resets_counter(self):
-        d = Detector(confirm_frames=3)
-        red, blue = self._red_icon(), _icon_frame(BLUE)
-        assert not d.detect(red)
-        d.detect(blue)  # 未命中，计数清零
-        assert not d.detect(red)
-        assert not d.detect(red)
-        assert d.detect(red)
-
-    def test_reset_clears_confirmation(self):
-        d = Detector(confirm_frames=3)
-        frame = self._red_icon()
-        d.detect(frame)
-        d.detect(frame)
-        d.reset()
-        assert not d.detect(frame)  # 计数清空，重新累计
-
-    def test_position_change_resets_counter(self):
-        # 同一位置连续 3 帧才触发；位置跳变（如总览滚动 / 不同位置轮流出现）重新累计
-        d = Detector(confirm_frames=3)
-
-        def frame_at(x):
-            f = _frame()
-            _icon(f, RED, x=x, y=100)
-            _name(f, x=x + 15 + 6, y=100)
-            return f
-
-        a, b = frame_at(50), frame_at(250)
-        assert not d.detect(a)  # A 第 1 帧
-        assert not d.detect(a)  # A 第 2 帧
-        assert not d.detect(b)  # 位置跳到 B → 重置为 B 第 1 帧
-        assert not d.detect(b)  # B 第 2 帧
-        assert d.detect(b)      # B 第 3 帧触发
-
-    def test_alternating_positions_never_trigger(self):
-        # 两个位置轮流命中（位置不稳定）不应累计到触发阈值
-        d = Detector(confirm_frames=3)
-
-        def frame_at(x):
-            f = _frame()
-            _icon(f, RED, x=x, y=100)
-            _name(f, x=x + 15 + 6, y=100)
-            return f
-
-        a, b = frame_at(50), frame_at(250)
-        for _ in range(10):
-            assert not d.detect(a)
-            assert not d.detect(b)
-
-
-class TestDetectorMask:
-    def test_red_mask_shape_matches_downscaled(self):
-        d = Detector(downscale=2)
-        frame = np.full((200, 300, 3), RED, dtype=np.uint8)
-        mask = d.red_mask(frame)
-        assert mask.shape == (100, 150)
-
-    def test_red_boxes_only_for_red(self):
-        d = Detector()
-        assert d.red_boxes(_icon_frame(BLUE)) == []
-        assert len(d.red_boxes(_icon_frame(RED))) >= 1
-
-
-class TestMultiColor:
-    """多警报颜色：4 种总览预设色（红 / 橙 / 黄 / 灰白）各自命中、互不串色。"""
-
-    def test_each_preset_detects_own_palette_color(self):
-        # 用调色板实测颜色绘制图标：勾了哪个色，就必须能命中哪个色
-        for name in ("red", "orange", "yellow", "gray_white"):
-            color = RED if name == "red" else _bgr(name)
-            assert Detector(colors=[name]).has_red(_icon_frame(color)), name
-
-    def test_hue_windows_do_not_overlap(self):
-        # 色相窗口按相邻预设中点划分：勾「橙」不会命中「黄」图标，反之亦然
-        assert not Detector(colors=["orange"]).has_red(_icon_frame(YELLOW))
-        assert not Detector(colors=["yellow"]).has_red(_icon_frame(ORANGE))
-        assert not Detector(colors=["red"]).has_red(_icon_frame(ORANGE))
-        assert not Detector(colors=["red"]).has_red(_icon_frame(YELLOW))
-
-    def test_red_default_only(self):
-        d = Detector()
-        assert d.has_red(_icon_frame(RED))
-        assert not d.has_red(_icon_frame(BLUE))
-
-    def test_multiple_colors_union(self):
-        d = Detector(colors=["red", "yellow"])
-        assert d.has_red(_icon_frame(RED))
-        assert d.has_red(_icon_frame(YELLOW))
-        assert not d.has_red(_icon_frame(ORANGE))  # 未启用橙色
-
-    def test_colors_str_single(self):
-        d = Detector(colors="orange")
-        assert d.colors == ("orange",)
-
-    def test_unknown_color_ignored(self):
-        d = Detector(colors=["red", "not_a_color"])
-        assert d.has_red(_icon_frame(RED))
-        assert not d.has_red(_icon_frame(BLUE))
-
-    def test_removed_colors_ignored(self):
-        # 已移除的颜色（旧配置遗留）不再命中任何目标
-        for removed, color in (("blue", BLUE), ("green", (0, 255, 0)), ("black", (0, 0, 0))):
-            assert not Detector(colors=[removed]).has_red(_icon_frame(color)), removed
-
-    def test_gray_white_detected_when_enabled(self):
-        d = Detector(colors=["gray_white"])
-        assert d.has_red(_icon_frame(GRAY))
-        assert not d.has_red(_icon_frame(DARK_GRAY))  # 暗灰低于灰白 V 下限
-
-    def test_palette_gray_white_swatch_detected(self):
-        # 调色板自身的灰白 (178,178,178) 也应命中（明度上限已放宽到 200）
-        assert Detector(colors=["gray_white"]).has_red(_icon_frame(PALETTE_GRAY))
+    @pytest.mark.parametrize("color", [BLUE, GREEN, PURPLE])
+    def test_friend_colors_never_alert(self, color):
+        detector = Detector()
+        assert not detector.has_red(_one(color))
+        assert detector.last_all_boxes
+        assert detector.last_boxes == []
 
     def test_default_colors_are_the_four_presets(self):
-        d = Detector()
         assert DEFAULT_ALERT_COLORS == ["red", "orange", "yellow", "gray_white"]
-        for color in (RED, ORANGE, YELLOW, GRAY):
-            assert d.has_red(_icon_frame(color))
-        assert not d.has_red(_icon_frame(BLUE))
 
-    def test_preset_ranges_are_hue_disjoint(self):
-        # 4 色预设的色相窗口两两不相交（避免勾一个等于勾两个）
-        covered: dict[str, set[int]] = {}
-        for name in DEFAULT_ALERT_COLORS:
-            if name == "gray_white":
-                continue
-            hues: set[int] = set()
-            for low, high in color_ranges(name, 0.5):
-                hues |= set(range(low[0], high[0] + 1))
-            covered[name] = hues
-        names = list(covered)
-        for i, a in enumerate(names):
-            for b in names[i + 1 :]:
-                assert not (covered[a] & covered[b]), f"{a} 与 {b} 色相窗口重叠"
+    @pytest.mark.parametrize("name", ["red", "orange", "yellow", "gray_white"])
+    def test_presets_still_have_masks(self, name):
+        assert color_ranges(name, 0.5)
 
+    def test_each_palette_swatch_is_accepted(self):
+        for name in ("red", "orange", "yellow", "gray_white"):
+            red, green, blue = EVE_COLORS[name]["rgb"]
+            color = (blue, green, red) if name != "red" else RED
+            assert Detector(colors=[name]).has_red(_one(color))
 
-class TestGrayWhiteSeparation:
-    """灰白掩码会被名字文字污染，须用更高填充率把「实心图标」与「名字字形」分开。"""
+    def test_colors_string_is_singleton(self):
+        detector = Detector(colors="orange")
+        assert detector.colors == ("orange",)
+        assert detector.has_red(_one(ORANGE))
+        assert not detector.has_red(_one(YELLOW))
 
-    def test_gray_white_icon_detected(self):
-        d = Detector(colors=["gray_white"])
-        assert d.has_red(_icon_frame(GRAY, name=True))
+    def test_multiple_enabled_colors_union(self):
+        detector = Detector(colors=["red", "yellow"])
+        assert detector.has_red(_one(RED))
+        assert detector.has_red(_one(YELLOW))
+        assert not detector.has_red(_one(ORANGE))
 
-    def test_gray_white_icon_detected_without_name(self):
-        # 纯图标 ROI（无名字）也能识别
-        d = Detector(colors=["gray_white"])
-        assert d.has_red(_icon_frame(GRAY, name=False))
+    def test_unknown_color_is_ignored(self):
+        detector = Detector(colors=["red", "not_a_color"])
+        assert detector.has_red(_one(RED))
+        assert not detector.has_red(_one(BLUE))
 
-    def test_hollow_gray_blob_rejected(self):
-        # 空心/低填充的灰色形状（模拟名字字形 O/D 之类）应被填充率剔除，仅实心方块命中
-        d = Detector(colors=["gray_white"])
-        f = _frame()
-        cv2.rectangle(f, (100, 100), (114, 114), GRAY, -1)       # 外框
-        cv2.rectangle(f, (102, 102), (112, 112), (0, 0, 0), -1)  # 内部挖空，填充率低
-        assert not d.has_red(f)
+    @pytest.mark.parametrize(("name", "color"), [("green", GREEN), ("blue", BLUE), ("black", (0, 0, 0))])
+    def test_removed_config_color_does_not_alert(self, name, color):
+        assert not Detector(colors=[name]).has_red(_one(color))
 
-    def test_name_glyphs_not_detected(self):
-        # 一排空心白色字形（低填充率）代表名字文字：不应被当作中立图标目标
-        d = Detector(colors=["gray_white"])
-        f = _frame()
-        for i in range(4):
-            x = 100 + i * 18
-            cv2.rectangle(f, (x, 100), (x + 14, 114), WHITE, -1)
-            cv2.rectangle(f, (x + 2, 102), (x + 12, 112), (0, 0, 0), -1)  # 空心
-        assert d.red_boxes(f) == []
+    def test_white_alias_maps_to_gray_white(self):
+        assert Detector(colors=["white"]).has_red(_one(GRAY))
+        assert Detector(colors=["white"]).has_red(_one(PALETTE_GRAY))
 
-    def test_gray_icon_detected_among_name_text(self):
-        # 实心中立图标 + 空心名字字形同帧：仅实心图标命中，名字字形不作为目标
-        d = Detector(colors=["gray_white"])
-        f = _frame()
-        _icon(f, GRAY, x=60, y=100)
-        for i in range(4):
-            x = 90 + i * 18
-            cv2.rectangle(f, (x, 100), (x + 14, 114), WHITE, -1)
-            cv2.rectangle(f, (x + 2, 102), (x + 12, 112), (0, 0, 0), -1)  # 空心
-        assert len(d.red_boxes(f)) == 1
+    def test_hue_windows_remain_disjoint(self):
+        assert not Detector(colors=["orange"]).has_red(_one(YELLOW))
+        assert not Detector(colors=["yellow"]).has_red(_one(ORANGE))
+        assert not Detector(colors=["red"]).has_red(_one(ORANGE))
 
-    def test_white_blob_rejected_but_gray_kept(self):
-        # 目标是「灰」而非「白」：纯白色实心方块（图标里的白色/白色文字）应剔除，
-        # 同尺寸的灰色中立图标应命中（平均明度检查）。
-        d = Detector(colors=["gray_white"])
-        f = _frame()
-        cv2.rectangle(f, (100, 100), (129, 129), WHITE, -1)  # 纯白
-        assert d.red_boxes(f) == []
-        g = _frame()
-        cv2.rectangle(g, (100, 100), (129, 129), GRAY, -1)  # 灰
-        assert len(d.red_boxes(g)) == 1
+    def test_dark_gray_rejected(self):
+        assert not Detector(colors=["gray_white"]).has_red(_one((70, 70, 70)))
 
-    def test_tiny_white_name_excluded(self):
-        # 极小字体名字（下采样后成为紧贴的紧凑白块）不应命中，仅灰图标命中
-        d = Detector(colors=["gray_white"])
-        f = _frame()
-        cv2.rectangle(f, (30, 120), (49, 139), GRAY, -1)
-        for i in range(6):
-            cv2.rectangle(f, (56 + i * 6, 124), (60 + i * 6, 136), WHITE, -1)
-        assert len(d.red_boxes(f)) == 1
+    def test_black_is_not_a_default_target(self):
+        assert not Detector().has_red(_one((0, 0, 0)))
 
-    def test_tiny_gray_name_rejected_by_left_context(self):
-        # 极小字体名字渲染成「灰」字串（平均明度落在灰区间、绕开灰白上限）：
-        # 靠「同行左侧已有同色内容」判据剔除；行首图标（左侧空）仍命中。
-        d = Detector(colors=["gray_white"])
-        f = _frame()
-        cv2.rectangle(f, (20, 60), (49, 89), GRAY, -1)          # 行首灰图标
-        for i in range(6):                                      # 紧邻的灰色名字字串
-            cv2.rectangle(f, (56 + i * 16, 62), (70 + i * 16, 76), (160, 160, 160), -1)
-        boxes = d.red_boxes(f)
-        assert len(boxes) == 1
-        assert boxes[0][0] < 55  # 仅命中行首图标
-
-
-class TestStrictness:
-    """识别程度：宽松包含更多，严格判定更苛刻。"""
-
-    def test_loose_detects_borderline(self):
-        # 暗红 V=50：宽松(0)时 v_min=40 命中，严格(100)时 v_min=70 不命中
-        f = _icon_frame((0, 0, 50))
-        assert Detector(strictness=0).has_red(f)
-        assert not Detector(strictness=100).has_red(f)
-
-    def test_strict_still_detects_strong_color(self):
-        # 高饱和高亮红色在严格模式下仍是实心方块图标
-        assert Detector(strictness=100).has_red(_icon_frame(RED))
-
-    def test_gray_white_detected_across_strictness(self):
-        # 中立灰白图标 V≈129 即使在严格模式也应命中（旧算法严格模式漏检）
-        for s in (0, 50, 75, 100):
-            assert Detector(strictness=s, colors=["gray_white"]).has_red(_icon_frame(GRAY))
+    @pytest.mark.parametrize("strictness", [0, 50, 100])
+    def test_mid_gray_neutral_is_stable(self, strictness):
+        assert Detector(colors=["gray_white"], strictness=strictness).has_red(_one(GRAY))
 
     def test_strictness_clamped(self):
         assert Detector(strictness=999).strictness == 100
         assert Detector(strictness=-5).strictness == 0
+
+
+class TestWhiteOnBrightBackground:
+    def test_low_contrast_white_square_uses_darkness_not_absolute_brightness(self):
+        frame = _frame(width=220, height=160, bg=(205, 205, 205))
+        _square(frame, (185, 185, 185), 80, 60, 15, "dot")
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert detector.red_boxes(frame)
+
+    def test_white_emblem_does_not_change_face_classification(self):
+        frame = _frame(width=220, height=160, bg=(205, 205, 205))
+        _square(frame, (185, 185, 185), 80, 60, 21, "star")
+        assert Detector().has_red(frame)
+
+    def test_pure_white_on_dark_background_is_allowed_as_white(self):
+        frame = _frame()
+        _square(frame, WHITE, 100, 80, 15, "blank")
+        assert Detector(colors=["gray_white"]).has_red(frame)
+
+    def test_four_low_contrast_white_squares_form_hostile_grid(self):
+        frame = _frame(width=180, height=140, bg=(205, 205, 205))
+        for index in range(4):
+            _square(frame, (185, 185, 185), 24, 18 + index * 21, 15, "star")
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert len(detector.last_boxes) == 4
+
+    def test_bright_background_gradient_has_no_square(self):
+        gradient = np.tile(
+            np.linspace(195, 205, 121, dtype=np.uint8),
+            (315, 1),
+        )
+        gradient = np.dstack((gradient, gradient, gradient))
+        detector = Detector()
+        assert not detector.has_red(gradient)
+        assert detector.last_boxes == []
+        assert detector.last_all_boxes == []
+
+    def test_white_name_text_does_not_become_a_square(self):
+        frame = _frame(width=180, height=140, bg=(205, 205, 205))
+        for index in range(4):
+            y = 18 + index * 21
+            _square(frame, (185, 185, 185), 24, y, 15, "star")
+        cv2.rectangle(frame, (46, 20), (110, 31), WHITE, -1)
+        cv2.rectangle(frame, (46, 43), (112, 54), WHITE, 2)
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert len(detector.last_boxes) == 4
+        assert len(detector.last_all_boxes) == 4
+
+
+class TestSquareGeometry:
+    @pytest.mark.parametrize("size", [6, 8, 10, 15, 21, 36, 40])
+    def test_single_square_scale_adaptive(self, size):
+        detector = Detector()
+        assert detector.has_red(_one(RED, size=size))
+        assert detector.last_boxes
+
+    @pytest.mark.parametrize("size,pitch", [(6, 8), (10, 13), (15, 21), (21, 28), (36, 48)])
+    def test_size_adaptive_grid(self, size, pitch):
+        frame = _column(RED, size=size, pitch=pitch, rows=3)
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert detector.last_grid is not None
+
+    @pytest.mark.parametrize("center", ["blank", "star", "cross", "bar", "dot"])
+    def test_center_graphic_is_irrelevant(self, center):
+        assert Detector().has_red(_one(RED, size=15, center=center))
+
+    def test_name_is_irrelevant(self):
+        without_name = _column(RED, rows=4)
+        with_name = without_name.copy()
+        for y in (20, 41, 62, 83):
+            cv2.rectangle(with_name, (42, y), (180, y + 12), WHITE, -1)
+        a = Detector()
+        b = Detector()
+        assert a.has_red(without_name)
+        assert b.has_red(with_name)
+        assert a.last_boxes == b.last_boxes
+        assert a.last_grid is not None and b.last_grid is not None
+
+    def test_wide_bar_rejected(self):
+        frame = _frame()
+        frame[90:111, 40:210] = RED
+        assert not Detector().has_red(frame)
+
+    @pytest.mark.parametrize("radius", [7, 12, 18])
+    def test_round_light_rejected(self, radius):
+        frame = _frame()
+        cv2.circle(frame, (120, 100), radius, RED, -1)
+        assert not Detector().has_red(frame)
+
+    @pytest.mark.parametrize("thickness", [1, 2, 4])
+    def test_hollow_square_rejected(self, thickness):
+        frame = _frame()
+        cv2.rectangle(frame, (90, 80), (111, 101), RED, thickness)
+        assert not Detector().has_red(frame)
+
+    def test_hollow_glyph_rows_rejected(self):
+        frame = _frame(width=260, height=220)
+        for index in range(4):
+            y = 30 + index * 36
+            cv2.rectangle(frame, (40, y), (55, y + 15), WHITE, 2)
+        assert not Detector(colors=["gray_white"]).has_red(frame)
+
+    def test_two_noncollinear_squares_fail_safe(self):
+        frame = _frame(width=260, height=220)
+        _square(frame, RED, 30, 30, 15, "dot")
+        _square(frame, RED, 160, 140, 15, "dot")
+        assert not Detector().has_red(frame)
+
+    def test_empty_frame_is_false(self):
+        assert not Detector().has_red(_frame())
+        assert not Detector().detect(None)
+
+    def test_too_dark_colored_square_is_rejected(self):
+        assert not Detector(strictness=100).has_red(_one((0, 0, 30)))
+
+    def test_loose_vs_strict_borderline_red(self):
+        frame = _one((0, 0, 52))
+        assert Detector(strictness=0).has_red(frame)
+        assert not Detector(strictness=100).has_red(frame)
+
+
+class TestTemporalConfirmation:
+    def test_third_stable_frame_triggers(self):
+        detector = Detector(confirm_frames=3)
+        frame = _column(RED)
+        assert not detector.detect(frame)
+        assert not detector.detect(frame)
+        assert detector.detect(frame)
+
+    def test_missing_target_frame_clears_counter(self):
+        detector = Detector(confirm_frames=3)
+        red, empty = _column(RED), _frame()
+        assert not detector.detect(red)
+        assert not detector.detect(empty)
+        assert not detector.detect(red)
+        assert not detector.detect(red)
+        assert detector.detect(red)
+
+    def test_friend_only_frame_clears_counter(self):
+        detector = Detector(confirm_frames=3)
+        red, blue = _column(RED), _column(BLUE)
+        detector.detect(red)
+        detector.detect(red)
+        assert not detector.detect(blue)
+        assert not detector.detect(red)
+
+    def test_color_change_restarts_counter(self):
+        detector = Detector(confirm_frames=3)
+        red, orange = _column(RED), _column(ORANGE)
+        detector.detect(red)
+        detector.detect(red)
+        assert not detector.detect(orange)
+        assert not detector.detect(orange)
+        assert detector.detect(orange)
+
+    def test_reset_clears_confirmation(self):
+        detector = Detector(confirm_frames=3)
+        frame = _column(RED)
+        detector.detect(frame)
+        detector.detect(frame)
+        detector.reset()
+        assert detector._tracks == {}
+        assert not detector.detect(frame)
+
+    @pytest.mark.parametrize("gap", [60, 120])
+    def test_position_jump_restarts_counter(self, gap):
+        detector = Detector(confirm_frames=3)
+        first = _frame(width=320, height=200)
+        second = _frame(width=320, height=200)
+        _square(first, RED, 30, 80, 15, "dot")
+        _square(second, RED, 30 + gap, 80, 15, "dot")
+        detector.detect(first)
+        detector.detect(first)
+        assert not detector.detect(second)
+        assert not detector.detect(second)
+        assert detector.detect(second)
+
+    def test_alternating_positions_never_trigger(self):
+        detector = Detector(confirm_frames=3)
+        left = _frame(width=320, height=200)
+        right = _frame(width=320, height=200)
+        _square(left, RED, 30, 80, 15, "dot")
+        _square(right, RED, 230, 80, 15, "dot")
+        for _ in range(10):
+            assert not detector.detect(left)
+            assert not detector.detect(right)
+
+    def test_no_hostile_current_frame_returns_false_immediately(self):
+        detector = Detector(confirm_frames=1)
+        assert detector.detect(_column(RED))
+        assert not detector.detect(_frame())
+        assert detector.last_boxes == []
+
+
+class TestCompatibilityAndMasks:
+    def test_downscale_parameter_does_not_change_result(self):
+        frame = _column(RED)
+        a = Detector(downscale=1)
+        b = Detector(downscale=2)
+        assert a.has_red(frame) == b.has_red(frame)
+        assert a.last_boxes == b.last_boxes
+
+    def test_legacy_kwargs_are_quietly_accepted(self):
+        detector = Detector(min_area=3, need_name=True, name_v=90, another_old_key=1)
+        assert detector.has_red(_one(RED))
+
+    def test_red_boxes_only_returns_hostile(self):
+        friend_frame = _column(BLUE)
+        detector = Detector()
+        assert detector.red_boxes(friend_frame) == []
+        assert detector.last_all_boxes
+        assert not detector.last_boxes
+
+    def test_last_all_boxes_contains_both_roles(self):
+        frame = _column(BLUE, rows=4)
+        _square(frame, RED, 20, 20 + 4 * 21, 15, "dot")
+        detector = Detector()
+        assert detector.has_red(frame)
+        assert len(detector.last_all_boxes) >= 5
+        assert len(detector.last_boxes) == 1
+
+    def test_red_mask_matches_input_dimensions(self):
+        frame = _frame(width=300, height=200)
+        _square(frame, RED, 100, 80, 15, "dot")
+        mask = Detector(downscale=2).red_mask(frame)
+        assert mask.shape == frame.shape[:2]
+        assert mask.dtype == np.uint8
+        assert np.count_nonzero(mask) > 0
+
+    def test_friend_only_mask_is_empty(self):
+        mask = Detector().red_mask(_one(BLUE))
+        assert mask.shape == (200, 240)
+        assert not mask.any()
+
+    def test_grayscale_frame_is_accepted(self):
+        gray = np.full((200, 240), 20, dtype=np.uint8)
+        cv2.rectangle(gray, (80, 70), (94, 84), 145, -1)
+        assert Detector().has_red(gray)

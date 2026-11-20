@@ -1,4 +1,4 @@
-# EVE Local Alert v1.2.1（待发布）
+# EVE Local Alert v1.2.1
 
 本次更新集中在**总览误报/白图标漏报**与**远程预警入口**，不改变捕获方式、警报音与无人机功能。
 
@@ -49,6 +49,16 @@
 - 点击打开 Server酱 注册页：https://sct.ftqq.com/r/25928
 - 首次引导文案同步指向该按钮。
 
+## 下载
+
+| 文件 | 大小 | SHA-256 |
+| --- | --- | --- |
+| `eve-alert-v1.2.1.exe` | 107.8 MiB | `3f98eda9a996d5096d554e7743ca0fb3b4bb9285c3219107b2f4fd22100e7def` |
+| `eve-alert-v1.2.1-portable.zip` | 111.4 MiB | `8be6df1fbb08146128eb53bca9236d56c172a0023db34e76c5633ef713236211` |
+
+- 单文件版：双击直接运行，启动需自解压，慢几秒；
+- 便携版：解压后运行 `eve-alert.exe`，必须与 `_internal` 文件夹放在一起。
+
 ## 验证
 
 - `325 passed`，连续 10 次通过；
@@ -85,4 +95,4 @@
 6. `git tag v1.2.1`，推送 main + tag
 7. `gh release create v1.2.1 ... --notes-file docs/release-notes-v1.2.1.md --latest`
 
-> 当前分支：`task/grid-detector`；尚未合并/推送/构建安装包。
+> 当前分支：`main`；安装包已构建，待推送 tag 与 GitHub Release。

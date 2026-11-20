@@ -54,7 +54,7 @@
       <div class="doc-note">
         <p><strong>文档说明：</strong>本文档版本 v1.2.0（2026-11-20），成稿日期 2026-08-30，适用于 Windows 10 / 11 平台。文档给出技术栈、模块划分、核心算法、性能预算与工程目录，供开发者作为实现与迭代的基线。</p>
         <p><strong>最近更新（v1.2.0，2026-11-20）：</strong>新增无人机监控、返回中识别、可配置空闲提示延时与飞行状态悬浮窗；无人机采用字样模板 + 同排血条双确认，监控中支持设置热更新。</p>
-        <p><strong>最近更新（未发布）：</strong>检测器重写为「方格 + 固定列/行距网格 + 外环/四角颜色」，不再依赖名字与中心图形；颜色选择改为兼容模式 <code>auto</code> / <code>low_contrast</code> / <code>strict</code>，旧 <code>strictness</code> 自动迁移，ROI 检测始终使用 1× 分辨率。</p>
+        <p><strong>最近更新（v1.2.1，2026-11-20）：</strong>检测器重写为「方格 + 固定列/行距网格 + 外环/四角颜色」，不再依赖名字与中心图形；颜色选择改为兼容模式 <code>auto</code> / <code>low_contrast</code> / <code>strict</code>，旧 <code>strictness</code> 自动迁移，ROI 检测始终使用 1× 分辨率。</p>
       </div>
     </section>
 
@@ -215,7 +215,7 @@ flowchart TD
     </section>
 
     <section class="doc-diagram" id="detection">
-      <h2>方格 + 网格检测（未发布）</h2>
+      <h2>方格 + 网格检测（v1.2.1）</h2>
       <p>检测单位是玩家名字<strong>前的阵营方格</strong>，不是颜色块，也不是名字条。名字字体、文字宽度和方格中心图案都不进入判定；工具只确认方格的外形、在图标列中的固定位置，以及外环 / 四角的颜色。</p>
 
       <h3>为什么不再按颜色块报警</h3>

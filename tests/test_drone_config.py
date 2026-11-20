@@ -17,7 +17,7 @@ def test_v12_defaults(tmp_path):
     cfg = ConfigManager(tmp_path / "missing.json")
     assert cfg.data["drone"] == {
         "enabled": False,
-        "idle_delay": 10,
+        "idle_delay": 30,
         "roi": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
         "idle_sound": "assets/drone_idle.wav",
         "alert_sound": "assets/drone_alert.wav",
@@ -34,7 +34,7 @@ def test_v12_defaults(tmp_path):
 def test_old_config_is_deep_merged(tmp_path):
     cfg = _load_with(tmp_path, {"roi": {"x": 0.4}})
     assert cfg.data["roi"]["x"] == 0.4
-    assert cfg.data["drone"]["idle_delay"] == 10
+    assert cfg.data["drone"]["idle_delay"] == 30
     assert "count" not in cfg.data["drone"]
     assert cfg.data["overlay"]["visible"] is False
 
@@ -47,8 +47,8 @@ def test_drone_idle_delay_is_clamped_and_invalid_falls_back(tmp_path):
         (120, 120),
         (121, 120),
         ("30", 30),
-        ("bad", 10),
-        (True, 10),
+        ("bad", 30),
+        (True, 30),
     )
     for index, (value, expected) in enumerate(cases):
         cfg = _load_with(
@@ -61,7 +61,7 @@ def test_drone_idle_delay_is_clamped_and_invalid_falls_back(tmp_path):
 def test_old_drone_count_is_discarded(tmp_path):
     cfg = _load_with(tmp_path, {"drone": {"count": 2, "enabled": True}})
     assert "count" not in cfg.data["drone"]
-    assert cfg.data["drone"]["idle_delay"] == 10
+    assert cfg.data["drone"]["idle_delay"] == 30
 
 
 def test_invalid_drone_roi_becomes_unselected(tmp_path):

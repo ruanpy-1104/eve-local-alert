@@ -49,7 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "logging": {"level": "error", "file": "logs/eve-alert.log"},
     "drone": {
         "enabled": False,
-        "idle_delay": 10,
+        "idle_delay": 30,
         "roi": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
         "idle_sound": "assets/drone_idle.wav",
         "alert_sound": "assets/drone_alert.wav",
@@ -101,13 +101,13 @@ def _normalize_colors(value: object) -> list[str]:
 
 
 def _normalize_idle_delay(value: object) -> int:
-    """把无人机空闲提示延时收敛到 1–120 秒；非法值回退默认 10。"""
+    """把无人机空闲提示延时收敛到 1–120 秒；非法值回退默认 30。"""
     if isinstance(value, bool):
-        return 10
+        return 30
     try:
         idle_delay = int(value)
     except (TypeError, ValueError, OverflowError):
-        return 10
+        return 30
     return max(1, min(120, idle_delay))
 
 
@@ -145,7 +145,7 @@ def _normalize_drone(drone: object) -> dict[str, Any]:
     alert_sound = current.get("alert_sound", DEFAULT_CONFIG["drone"]["alert_sound"])
     return {
         "enabled": enabled if isinstance(enabled, bool) else False,
-        "idle_delay": _normalize_idle_delay(current.get("idle_delay", 10)),
+        "idle_delay": _normalize_idle_delay(current.get("idle_delay", 30)),
         "roi": _normalize_drone_roi(current.get("roi")),
         "idle_sound": (
             idle_sound

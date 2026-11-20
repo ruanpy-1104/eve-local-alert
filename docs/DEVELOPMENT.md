@@ -485,7 +485,7 @@ nuitka --standalone --enable-plugin=pyside6 --windows-console-mode=disable `
 {
   "drone": {
     "enabled": false,
-    "idle_delay": 10,
+    "idle_delay": 30,
     "roi": {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0},
     "idle_sound": "assets/drone_idle.wav",
     "alert_sound": "assets/drone_alert.wav"
@@ -494,12 +494,12 @@ nuitka --standalone --enable-plugin=pyside6 --windows-console-mode=disable `
 }
 ```
 
-旧配置由深度合并自动补全。`drone.idle_delay` 规整为整数并钳制到 1–120 秒，非法值回退默认 10；旧版 `drone.count` 直接丢弃。无人机 ROI 任一坐标非数字、越界或宽高不大于 0 时规整为零 ROI；`overlay.x/y` 只接受整数，其他类型转为 `null`。
+旧配置由深度合并自动补全。`drone.idle_delay` 规整为整数并钳制到 1–120 秒，非法值回退默认 30；旧版 `drone.count` 直接丢弃。无人机 ROI 任一坐标非数字、越界或宽高不大于 0 时规整为零 ROI；`overlay.x/y` 只接受整数，其他类型转为 `null`。
 
 ### 11.2 接口与线程边界
 
 - `Capture.grab_regions(hwnd, regions)` 返回与 `regions` 等长的裁剪帧列表；优先一次整窗 PrintWindow，渲染失败后逐区域 mss 回退。
-- `DroneDetector.update(frame_bgr)` 返回 `DroneState(idle_count, combat, returning, damaged, all_idle, idle_chime)`，内部维护空闲确认与 `combat && damaged` 报警连续帧。存在有效空闲行且没有战斗 / 返回中时开始确认；`all_idle` 持续 `idle_delay_seconds`（来自 `drone.idle_delay`，默认 10 秒、范围 1–120）后发出一次 `idle_chime`，不要求之前发生过战斗，中途中断会重新计时。`update(None)` 与极小 / 空帧安全返回全 false 状态。
+- `DroneDetector.update(frame_bgr)` 返回 `DroneState(idle_count, combat, returning, damaged, all_idle, idle_chime)`，内部维护空闲确认与 `combat && damaged` 报警连续帧。存在有效空闲行且没有战斗 / 返回中时开始确认；`all_idle` 持续 `idle_delay_seconds`（来自 `drone.idle_delay`，默认 30 秒、范围 1–120）后发出一次 `idle_chime`，不要求之前发生过战斗，中途中断会重新计时。`update(None)` 与极小 / 空帧安全返回全 false 状态。
 - `MonitorWorker` 新增 `flight_state(str)`、`drone_idle()`、`drone_damaged(bool)`、`drone_status(str)`。`idle_chime` 事件始终由检测器消费，但暂停期间不发 `drone_idle`，恢复后不补响；`drone_damaged` 由 `damage_alarm_active()` 驱动，只在「战斗中 + 红血条」连续 2 帧后进入，脱离战斗状态立即退出。`drone_status` 只在值变化时发送，优先级为 `damage_alarm_active()` → `"damaged"`，其次 `_drone_idle_alert_active` → `"idle"`，否则 `""`。`_drone_idle_alert_active` 仅在未被暂停拦截的 `idle_chime` 真正播放时置真，单纯 `all_idle=True` 不显示空闲状态。
 - `FlightStatusOverlay` 接收 `drone_status` 后显示第二行「无人机：空闲」（绿色、普通 11pt）或「无人机：受损」（红色、加粗 12pt）；空值隐藏。受损状态只在 `damage_alarm_active()` 为真时显示。窗口隐藏该行时为 200×54，显示时为 200×74，尺寸切换后重新钳制屏幕位置。主面板缓存 `_drone_state`，悬浮窗重新显示时立即应用缓存。
 - `SoundPlayer` 由主面板在 GUI 线程持有；禁止在监控线程直接创建 QtMultimedia 对象。offscreen 或没有 `QCoreApplication` 时所有播放方法静默返回。

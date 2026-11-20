@@ -271,11 +271,11 @@ def test_starting_idle_chimes_without_prior_combat():
         state = detector.update(_idle_frame())
     assert state.all_idle is True
     assert detector._all_idle_since == 0.0
-    clock.now = 9.9
+    clock.now = 29.9
     assert detector.update(_idle_frame()).idle_chime is False
-    clock.now = 10.0
+    clock.now = 30.0
     assert detector.update(_idle_frame()).idle_chime is True
-    assert detector.idle_delay_seconds == 10.0
+    assert detector.idle_delay_seconds == 30.0
 
 
 def test_return_then_idle_starts_fresh_delay():
@@ -283,14 +283,14 @@ def test_return_then_idle_starts_fresh_delay():
     detector = DroneDetector(confirm_frames=3, clock=clock)
     for _ in range(5):
         assert detector.update(_return_frame()).all_idle is False
-    clock.now = 20.0
+    clock.now = 40.0
     for _ in range(3):
         state = detector.update(_idle_frame())
     assert state.all_idle is True
-    assert detector._all_idle_since == 20.0
-    clock.now = 29.9
+    assert detector._all_idle_since == 40.0
+    clock.now = 69.9
     assert detector.update(_idle_frame()).idle_chime is False
-    clock.now = 30.0
+    clock.now = 70.0
     assert detector.update(_idle_frame()).idle_chime is True
 
 
@@ -299,15 +299,15 @@ def test_idle_chime_fires_once_until_interrupted():
     detector = DroneDetector(confirm_frames=3, clock=clock)
     for _ in range(3):
         detector.update(_idle_frame())
-    clock.now = 10.0
+    clock.now = 30.0
     assert detector.update(_idle_frame()).idle_chime is True
-    clock.now = 20.0
+    clock.now = 40.0
     assert detector.update(_idle_frame()).idle_chime is False
     detector.update(_return_frame())
     assert detector._idle_chime_fired is False
     for _ in range(3):
         detector.update(_idle_frame())
-    clock.now = 30.0
+    clock.now = 70.0
     assert detector.update(_idle_frame()).idle_chime is True
 
 
@@ -332,20 +332,20 @@ def test_idle_timer_resets_after_combat_return_or_no_idle():
         detector = DroneDetector(confirm_frames=3, clock=clock)
         for _ in range(3):
             detector.update(_idle_frame())
-        clock.now = 9.9
+        clock.now = 29.9
         assert detector.update(_idle_frame()).idle_chime is False
         detector.update(interrupt)
         assert detector._all_idle_since is None
         assert detector._idle_chime_fired is False
-        clock.now = 10.0
+        clock.now = 30.0
         for _ in range(3):
             assert detector.update(_idle_frame()).idle_chime is False
-        assert detector._all_idle_since == 10.0
-        clock.now = 19.9
+        assert detector._all_idle_since == 30.0
+        clock.now = 59.9
         assert detector.update(_idle_frame()).idle_chime is False
-        clock.now = 20.0
+        clock.now = 60.0
         assert detector.update(_idle_frame()).idle_chime is True
-        clock.now = 20.1
+        clock.now = 60.1
         assert detector.update(_idle_frame()).idle_chime is False
 
 

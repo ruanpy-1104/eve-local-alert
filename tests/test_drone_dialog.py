@@ -396,7 +396,7 @@ def test_drone_dialog_applies_idle_delay_and_enabled(app, tmp_path, monkeypatch)
     assert dialog.delay_spin.minimum() == 1
     assert dialog.delay_spin.maximum() == 120
     assert dialog.delay_spin.suffix() == " 秒"
-    assert dialog.delay_spin.value() == 10
+    assert dialog.delay_spin.value() == 30
     dialog.delay_spin.setValue(30)
     dialog.enable_check.setChecked(True)
     dialog._apply()

@@ -106,10 +106,10 @@ class DroneDialog(QDialog):
         self.delay_spin.setSuffix(" 秒")
         try:
             idle_delay = int(
-                (self.config.data.get("drone") or {}).get("idle_delay", 10)
+                (self.config.data.get("drone") or {}).get("idle_delay", 30)
             )
         except (TypeError, ValueError, OverflowError):
-            idle_delay = 10
+            idle_delay = 30
         self.delay_spin.setValue(max(1, min(120, idle_delay)))
         options.addWidget(self.delay_spin)
         options.addStretch(1)

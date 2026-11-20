@@ -32,7 +32,7 @@
   },
   "drone": {
     "enabled": false,
-    "idle_delay": 10,
+    "idle_delay": 30,
     "roi": {
       "x": 0.0,
       "y": 0.0,

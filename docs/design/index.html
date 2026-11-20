@@ -52,8 +52,8 @@
         <p><strong>核心设计决策：</strong>目标识别不依赖模型推理或模板库，而采用<strong>基于 HSV 颜色空间的预设颜色阈值分割</strong>。这是满足“轻量化 + 低延迟 + 无需训练”的最简可靠路径——阈值运算在 OpenCV 的 C/C++ 后端执行，单帧处理量级为毫秒级，配合 ROI 限定、识别程度调节与时序确认即可稳定达到 90% 以上准确率。</p>
       </div>
       <div class="doc-note">
-        <p><strong>文档说明：</strong>本文档版本 v1.0，成稿日期 2026-08-30，适用于 Windows 10 / 11 平台。文档给出技术栈、模块划分、核心算法、性能预算与工程目录，供开发者作为实现与迭代的基线。</p>
-        <p><strong>最近更新（v1.1.8，2026-10-11）：</strong>警报颜色精简为红 / 橙 / 黄 / 灰白 4 色（色相窗口按相邻预设中点固定划分，互不重叠），识别程度只调节饱和度 / 明度门槛；窗口定位改为跟踪用户点选的窗口句柄（关闭即判定目标已关闭）；远程预警开启后按钮套用主行动样式。</p>
+        <p><strong>文档说明：</strong>本文档版本 v1.2.0（2026-11-20），成稿日期 2026-08-30，适用于 Windows 10 / 11 平台。文档给出技术栈、模块划分、核心算法、性能预算与工程目录，供开发者作为实现与迭代的基线。</p>
+        <p><strong>最近更新（v1.2.0，2026-11-20）：</strong>新增无人机监控、返回中识别、可配置空闲提示延时与飞行状态悬浮窗；无人机采用字样模板 + 同排血条双确认，监控中支持设置热更新。</p>
       </div>
     </section>
 
@@ -269,6 +269,79 @@ flowchart LR
       <div class="doc-note">
         <p><strong>准确率说明：</strong>颜色方案在“玩家自行限定 ROI（如只框总览列）+ 颜色选择 + 识别程度调节 + 图标几何筛选 + 两级名字验证 + 时序确认”的组合下可稳定达到 90% 以上准确率。收到误报时把识别程度往“严格”调，漏报时往“宽松”调。</p>
       </div>
+    </section>
+
+    <section class="doc-block" id="drone-overlay">
+      <h2>无人机监控与飞行状态悬浮窗（v1.2.0）</h2>
+      <p>无人机监控为可选能力：玩家单独框选无人机列表 ROI，不影响敌对目标 ROI。监控线程每帧只请求一次整窗 <code>PrintWindow</code> 渲染，再从同一 BGR 帧中裁剪敌对 ROI 与无人机 ROI；无人机未启用、未框选或区域宽高无效时，不增加额外抓屏与检测。</p>
+
+      <h3>捕获与监控中设置热更新</h3>
+      <ul>
+        <li>预警运行中可以直接打开无人机设置窗口。设置窗口的 150 ms 整窗预览与监控线程的 <code>PrintWindow</code> 使用各自独立的捕获实例并发运行，打开、应用或关闭设置都不会停止或重启敌对预警。</li>
+        <li><code>MonitorWorker</code> 每帧读取最新 <code>config.data["drone"]</code> 的 <code>enabled</code>、<code>idle_delay</code> 和 <code>roi</code>。任一字段变化时重建 <code>DroneDetector</code>，新延时或 ROI 在下一帧生效。</li>
+        <li>关闭无人机监控时销毁检测器并清理无人机声音边沿、空闲活动与悬浮状态。旧版 <code>count</code> 配置直接丢弃。</li>
+      </ul>
+
+      <h3>字样模板 + 同排血条双确认</h3>
+      <p>每一行必须同时通过对应字样模板匹配，并在文字右侧绑定同排血条；仅出现绿色、红色或橙色像素不能计为无人机行。缺少血条、字形不匹配或血条位置不对齐的行都会直接丢弃。</p>
+      <div class="table-scroll">
+        <table class="doc-data-table">
+          <thead>
+            <tr>
+              <th style="width:150px;">模板</th>
+              <th style="width:120px;">文字颜色</th>
+              <th>匹配与有效行条件</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>idle.png</code></td><td>绿色</td><td>绿色文字簇只匹配「空闲」模板，并在右侧绑定白色血条后计入有效空闲行。</td></tr>
+            <tr><td><code>combat.png</code></td><td>红色</td><td>红色文字簇只匹配「战斗中」模板，并绑定右侧白色或红色血条后计入战斗行。</td></tr>
+            <tr><td><code>return.png</code></td><td>橙色</td><td>橙色文字簇只匹配「返回中」模板，并绑定右侧白色或红色血条后计入返回行。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="figure-caption"><strong>表 6-A：无人机字样模板。</strong><span>模板由 <code>tools/extract_drone_templates.py</code> 使用与检测器相同的 HSV 掩码和文字聚类函数确定性提取。</span></p>
+      <ul>
+        <li><strong>颜色掩码：</strong>绿色 <code>H∈[40,80], S≥70, V≥80</code>；红色 <code>H≤10</code> 或 <code>H≥170</code>，且 <code>S≥120, V≥90</code>；橙色 <code>H∈[12,35], S≥100, V≥80</code>；白色血条 <code>S≤60, V≥140</code>。无人机 ROI 不做下采样。</li>
+        <li><strong>文字簇：</strong>先做 <code>MORPH_CLOSE</code>（<code>1×2</code> 核），再提取连通域；水平间距不超过 6 px 且垂直相交的组件合并。过滤后保留高度 ≥6 px、宽高比 <code>1.8–4.2</code> 的文字簇。</li>
+        <li><strong>模板匹配：</strong>模板缩放到簇高度 <code>h</code> 与 <code>h-1</code>，保持宽高比并使用 <code>INTER_AREA</code>；双方做 <code>3×3 GaussianBlur</code> 后使用 <code>TM_CCOEFF_NORMED</code>，阈值 <code>0.45</code>，覆盖 0.5–1.5 倍实测缩放范围。</li>
+        <li><strong>血条绑定：</strong>白色 / 红色连通域满足高度 ≤12、宽度 ≥6、宽高比 ≥2.5 时作为血条段；血条左侧必须满足 <code>bar.x0 ≥ text.x1 + 2</code>，垂直中心差不超过 <code>0.7 × 文字高度</code>。</li>
+        <li><strong>降级路径：</strong>任一模板缺失或不可读时记录一次 warning，降级为颜色行 + 血条确认。绿色扫描行像素 ≥8 且右侧有血条时计为空闲行；红色 / 橙色文字候选高度 ≥9 且右侧有血条时分别视为战斗行、返回行。</li>
+      </ul>
+
+      <h3>空闲判定、提示与受损状态</h3>
+      <ul>
+        <li><strong>空闲条件：</strong><code>all_idle = idle_count ≥ 1 and not combat and not returning</code>，并连续达到确认帧数。不再使用无人机数量阈值，也不要求之前发生过战斗。</li>
+        <li><strong>提示延时：</strong>全部空闲持续 <code>drone.idle_delay</code> 后播放一次「叮咚」。默认 30 秒，用户可以设置 1–120 秒；<code>_idle_chime_fired</code> 保证持续空闲不会重复播放。</li>
+        <li><strong>中断重置：</strong>出现战斗、返回中、无有效空闲行或其它非空闲状态时，立即清空空闲计时与 fired；重新满足条件后从头计时，之后仍可再次提示一次。</li>
+        <li><strong>受损报警：</strong>只有「战斗中 + 红血条」连续达到确认帧数时才启动急促报警。纯红血条、纯战斗文字、返回中或空闲均不会触发报警；出现返回中或脱离战斗也会立即停止急促报警。</li>
+      </ul>
+      <div class="doc-callout">
+        <p><strong>状态优先级：</strong><code>damaged &gt; idle &gt; ""</code>。空闲悬浮状态只在「叮咚」实际播放且未被暂停拦截时进入；暂停时被吞掉提示不会显示空闲状态。受损状态只在急促报警实际触发时显示。</p>
+      </div>
+
+      <h3>飞行状态悬浮窗</h3>
+      <p><code>FlightStatusOverlay</code> 为无边框置顶、不抢焦点的悬浮窗。主状态显示安全 / 敌袭 / 暂停 / 最小化 / 目标关闭；无人机状态作为第二行显示：</p>
+      <div class="table-scroll">
+        <table class="doc-data-table">
+          <thead>
+            <tr>
+              <th style="width:150px;">状态键</th>
+              <th>显示与触发条件</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><code>idle</code></td><td>「无人机：空闲」，绿色普通字号。仅在空闲「叮咚」实际播放后显示，<code>all_idle</code> 消失、暂停、停止或配置重建时隐藏。</td></tr>
+            <tr><td><code>damaged</code></td><td>「无人机：受损」，红色加粗。仅在 <code>damage_alarm_active()</code> 为真时显示。</td></tr>
+            <tr><td><code>""</code></td><td>隐藏第二行，窗口恢复 200×54；显示第二行时窗口为 200×74。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="figure-caption"><strong>表 6-B：无人机悬浮状态。</strong><span><code>drone_status</code> 只在状态变化时发送，空状态与未监控状态不会保留旧无人机行。</span></p>
+      <ul>
+        <li>悬浮窗支持拖动、位置持久化、主屏右上角重置和锁定鼠标穿透；尺寸变化后仍钳制在屏幕可用区域内。</li>
+        <li>面板通过 <code>_monitoring_active</code> 与 <code>sender()</code> 校验无人机信号，只接受当前监控线程；停止、丢失、最小化或出错时清空无人机悬浮状态，避免旧线程收尾信号重新启动急促报警。</li>
+      </ul>
     </section>
 
     <section class="doc-block" id="latency">

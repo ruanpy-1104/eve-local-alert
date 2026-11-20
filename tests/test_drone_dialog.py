@@ -193,7 +193,121 @@ def test_monitor_worker_emits_drone_status_with_damage_priority(app, tmp_path):
         DroneState(5, False, False, True, False),
     )
     app.processEvents()
-    assert emitted == ["damaged", "idle"]
+    assert emitted == ["damaged", ""]
+
+    worker._handle_drone_state(
+        detector,
+        DroneState(5, False, False, True, True),
+    )
+    app.processEvents()
+    assert emitted == ["damaged", "", "idle"]
+    worker.deleteLater()
+
+
+def test_monitor_worker_idle_status_requires_actual_chime(app, tmp_path):
+    config = ConfigManager(tmp_path / "config.json")
+    worker = MonitorWorker(config, tmp_path)
+    idle_events: list[bool] = []
+    statuses: list[str] = []
+    worker.drone_idle.connect(lambda: idle_events.append(True))
+    worker.drone_status.connect(statuses.append)
+    detector = DroneDetector()
+
+    worker._handle_drone_state(
+        detector,
+        DroneState(5, False, False, True, False),
+    )
+    app.processEvents()
+    assert idle_events == []
+    assert statuses == []
+
+    worker._handle_drone_state(
+        detector,
+        DroneState(5, False, False, True, True),
+    )
+    app.processEvents()
+    assert idle_events == [True]
+    assert statuses == ["idle"]
+
+    worker._handle_drone_state(
+        detector,
+        DroneState(4, False, False, False, False),
+    )
+    app.processEvents()
+    assert statuses == ["idle", ""]
+
+    worker._paused.set()
+    worker._handle_drone_state(
+        detector,
+        DroneState(5, False, False, True, True),
+    )
+    app.processEvents()
+    assert idle_events == [True]
+    assert statuses == ["idle", ""]
+    assert worker._drone_idle_alert_active is False
+    worker.deleteLater()
+
+
+def test_update_drone_detector_rebuilds_and_destroys(app, tmp_path):
+    config = ConfigManager(tmp_path / "config.json")
+    worker = MonitorWorker(config, tmp_path)
+
+    _, detector = worker.update_drone_detector()
+    assert detector is None
+
+    config.update(
+        "drone",
+        {
+            "enabled": True,
+            "count": 3,
+            "roi": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
+        },
+    )
+    _, first = worker.update_drone_detector()
+    assert first is not None
+    assert first.count == 3
+    _, unchanged = worker.update_drone_detector()
+    assert unchanged is first
+
+    worker._drone_idle_alert_active = True
+    config.update(
+        "drone",
+        {
+            "enabled": True,
+            "count": 4,
+            "roi": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
+        },
+    )
+    _, count_changed = worker.update_drone_detector()
+    assert count_changed is not first
+    assert count_changed.count == 4
+    assert worker._drone_idle_alert_active is False
+
+    worker._drone_idle_alert_active = True
+    config.update(
+        "drone",
+        {
+            "enabled": True,
+            "count": 4,
+            "roi": {"x": 0.2, "y": 0.3, "width": 0.4, "height": 0.2},
+        },
+    )
+    _, roi_changed = worker.update_drone_detector()
+    assert roi_changed is not count_changed
+    assert worker._drone_idle_alert_active is False
+
+    config.update(
+        "drone",
+        {
+            "enabled": False,
+            "count": 4,
+            "roi": {"x": 0.2, "y": 0.3, "width": 0.4, "height": 0.2},
+        },
+    )
+    _, disabled = worker.update_drone_detector()
+    assert disabled is None
+    assert worker._drone_idle_alert_active is False
+    assert worker._drone_status == ""
     worker.deleteLater()
 
 
@@ -283,6 +397,47 @@ def test_drone_dialog_applies_count_and_enabled(app, tmp_path, monkeypatch):
     dialog._apply()
     assert config.data["drone"]["count"] == 3
     assert config.data["drone"]["enabled"] is True
+
+
+def test_open_drone_dialog_keeps_monitor_running(app, tmp_path, monkeypatch):
+    panel = ControlPanel(tmp_path / "config.json")
+    panel._has_target = True
+    panel._target_handle = 1
+    sentinel = object()
+    panel._worker = sentinel
+    stop_calls: list[bool] = []
+    start_calls: list[bool] = []
+    shown: list[bool] = []
+
+    class _StubDialog(QObject):
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+
+        def show(self):
+            shown.append(True)
+
+        def raise_(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(panel, "_worker_running", lambda: True)
+    monkeypatch.setattr(panel, "_stop_monitor", lambda: stop_calls.append(True))
+    monkeypatch.setattr(panel, "_start_monitor", lambda: start_calls.append(True))
+    monkeypatch.setattr(panel, "_ensure_target", lambda: _StubLocator().find())
+    monkeypatch.setattr("ui.panel.DroneDialog", _StubDialog)
+    try:
+        panel._open_drone_dialog()
+        assert stop_calls == []
+        assert start_calls == []
+        assert shown == [True]
+        assert panel._worker is sentinel
+        assert panel.status_label.text() == "无人机设置已打开，预警继续运行"
+    finally:
+        monkeypatch.setattr(panel, "_worker_running", lambda: False)
+        panel._worker = None
+        panel.close()
 
 
 def test_panel_has_drone_overlay_controls_and_menu_sync(app, tmp_path):

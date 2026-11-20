@@ -28,7 +28,7 @@ class DroneState:
 
 
 _EMPTY_STATE = DroneState(0, False, False, False, False)
-IDLE_ALERT_DELAY_SECONDS = 3.0
+IDLE_ALERT_DELAY_SECONDS = 10.0
 
 # 0.45 覆盖 0.5–1.5 倍实测下限；0.7 倍末行最低约 0.49，
 # 与实心色块（约 0）及随机噪声（≤0.15）仍有充足区分度。

@@ -153,6 +153,9 @@ class MonitorWorker(QThread):
         self._flight_state = ""
         self._drone_damaged_active = False
         self._drone_status = ""
+        self._drone_idle_alert_active = False
+        self._drone_detector: DroneDetector | None = None
+        self._drone_config_key: tuple | None = None
 
     def _emit_flight_state(self, state: str) -> None:
         """只在纯状态变化时发信号，避免 UI 重复刷新。"""
@@ -176,15 +179,49 @@ class MonitorWorker(QThread):
         self._drone_status = normalized
         self.drone_status.emit(normalized)
 
+    def _reset_drone_activity(self) -> None:
+        """清空无人机播报活动、受损报警边沿与悬浮状态。"""
+        self._drone_idle_alert_active = False
+        self._set_drone_damaged(False)
+        self._set_drone_status("")
+
+    def update_drone_detector(
+        self,
+    ) -> tuple[dict, DroneDetector | None]:
+        """读取最新无人机配置；enabled / count / roi 变化时重建检测器。"""
+        configured = self._config.data.get("drone")
+        drone_cfg = dict(configured or self._drone_config or {})
+        enabled = bool(drone_cfg.get("enabled", False))
+        try:
+            count = max(1, min(5, int(drone_cfg.get("count", 5))))
+        except (TypeError, ValueError, OverflowError):
+            count = 5
+        roi = drone_cfg.get("roi")
+        roi = dict(roi) if isinstance(roi, dict) else {}
+        roi_key = tuple(roi.get(key) for key in ("x", "y", "width", "height"))
+        config_key = (enabled, count, roi_key)
+        if config_key != self._drone_config_key:
+            self._drone_config_key = config_key
+            self._reset_drone_activity()
+            self._drone_detector = DroneDetector(count=count) if enabled else None
+        return drone_cfg, self._drone_detector
+
     def _handle_drone_state(
         self, detector: DroneDetector, state: DroneState
     ) -> None:
-        if state.idle_chime and not self._paused.is_set():
+        if self._paused.is_set():
+            self._drone_idle_alert_active = False
+        elif state.idle_chime:
+            self._drone_idle_alert_active = True
             self.drone_idle.emit()
-        self._set_drone_damaged(detector.damage_alarm_active())
-        if detector.damage_alarm_active():
+        elif not state.all_idle:
+            self._drone_idle_alert_active = False
+
+        damaged = detector.damage_alarm_active()
+        self._set_drone_damaged(damaged)
+        if damaged:
             self._set_drone_status("damaged")
-        elif state.all_idle:
+        elif self._drone_idle_alert_active:
             self._set_drone_status("idle")
         else:
             self._set_drone_status("")
@@ -228,7 +265,7 @@ class MonitorWorker(QThread):
 
     def stop(self) -> None:
         self._stop.set()
-        self._set_drone_status("")
+        self._reset_drone_activity()
 
     def set_paused(self, paused: bool) -> None:
         """设置播报暂停状态（UI 线程调用，工作线程下一帧生效）。"""
@@ -249,8 +286,7 @@ class MonitorWorker(QThread):
     def _notify_window_lost(self) -> None:
         """目标窗口已关闭：置位标志并通知面板退回「未选择目标」状态。"""
         self._window_lost = True
-        self._set_drone_damaged(False)
-        self._set_drone_status("")
+        self._reset_drone_activity()
         self._emit_flight_state("lost")
         self.window_lost.emit("目标程序窗口已关闭，请重新选择目标程序")
 
@@ -258,7 +294,7 @@ class MonitorWorker(QThread):
         try:
             self._loop()
             if not self._window_lost:
-                self._set_drone_damaged(False)
+                self._reset_drone_activity()
                 self._emit_flight_state("idle")
             # 仅自然结束时覆盖状态；手动停止 / 目标窗口关闭由面板自行设置后续状态，
             # 避免竞态覆盖。
@@ -266,7 +302,7 @@ class MonitorWorker(QThread):
                 self.status.emit("已停止")
         except Exception as exc:  # noqa: BLE001
             logger.error("监控线程异常：%s", exc, exc_info=True)
-            self._set_drone_status("")
+            self._reset_drone_activity()
             self.error.emit(str(exc))
 
     def _loop(self) -> None:
@@ -286,12 +322,6 @@ class MonitorWorker(QThread):
 
         capture = Capture()
         detector: Detector | None = None
-        drone_cfg = dict(self._drone_config or {})
-        drone_detector = (
-            DroneDetector(count=drone_cfg.get("count", 5))
-            if drone_cfg.get("enabled")
-            else None
-        )
         det_cfg_key: str | None = None
         frame_count = 0
         last_status = time.perf_counter()
@@ -307,6 +337,7 @@ class MonitorWorker(QThread):
             self._emit_flight_state("monitoring")
             while not self._stop.is_set():
                 started = time.perf_counter()
+                drone_cfg, drone_detector = self.update_drone_detector()
 
                 # 检测参数变化时重建 Detector（保持时序确认状态）
                 key = repr(sorted(cfg["detection"].items()))
@@ -335,8 +366,7 @@ class MonitorWorker(QThread):
                     if self._alerting:
                         self._alerting = False
                         alerter.stop()
-                    self._set_drone_damaged(False)
-                    self._set_drone_status("")
+                    self._reset_drone_activity()
                     self._emit_flight_state("minimized")
                     if not minimized_reported:
                         minimized_reported = True
@@ -374,7 +404,7 @@ class MonitorWorker(QThread):
                         self._handle_drone_state(drone_detector, drone_state)
                     else:
                         drone_detector.update(None)
-                        self._set_drone_damaged(False)
+                        self._reset_drone_activity()
                 if frame is None or frame.size == 0:
                     # 捕获失败（异常状态）：跳过本帧，不中断监控
                     time.sleep(interval)
@@ -448,8 +478,7 @@ class MonitorWorker(QThread):
                 time.sleep(max(0.0, interval - elapsed))
         finally:
             alerter.stop()  # 确保退出监控时停止警报
-            self._set_drone_damaged(False)
-            self._set_drone_status("")
+            self._reset_drone_activity()
             capture.close()
 
 
@@ -1607,7 +1636,7 @@ class ControlPanel(QWidget):
         return self._worker is not None and self._worker.isRunning()
 
     def _close_drone_dialog(self) -> None:
-        """关闭非模态无人机设置窗口，避免与监控 / 框选并行抓屏。"""
+        """关闭非模态无人机设置窗口。"""
         dialog = self._drone_dialog
         self._drone_dialog = None
         if dialog is not None:
@@ -1814,14 +1843,9 @@ class ControlPanel(QWidget):
 
     # ---- 颜色选择 / 预览 ----
     def _open_drone_dialog(self) -> None:
-        """停止当前监控并打开无人机独立设置窗口。"""
+        """打开无人机独立设置窗口；正在运行的敌对预警保持不变。"""
         if self._preview_dialog is not None:
             self._preview_dialog.close()
-        if self._worker_running():
-            self._stop_monitor()
-        if self._worker_running():
-            self.status_label.setText("正在停止上一轮监控，请稍候再设置无人机")
-            return
 
         if not self._has_target:
             self._select_target(
@@ -1834,7 +1858,6 @@ class ControlPanel(QWidget):
         win = self._ensure_target()
         if win is None:
             return
-        self.status_label.setText("已停止预警，正在设置无人机监控")
         if self._drone_dialog is not None:
             self._drone_dialog.close()
         self._drone_dialog = DroneDialog(
@@ -1845,6 +1868,8 @@ class ControlPanel(QWidget):
         )
         self._drone_dialog.show()
         self._drone_dialog.raise_()
+        if self._worker_running():
+            self.status_label.setText("无人机设置已打开，预警继续运行")
 
     def _open_color_picker(self) -> None:
         dialog = ColorPickerDialog(self.config, self)

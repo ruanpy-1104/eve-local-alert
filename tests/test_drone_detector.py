@@ -219,7 +219,7 @@ def test_combat_while_all_idle_never_chimes():
     clock = _Clock()
     detector = DroneDetector(count=3, confirm_frames=3, clock=clock)
     states = [detector.update(frame) for _ in range(10)]
-    clock.now = 10.0
+    clock.now = 20.0
     states.extend(detector.update(frame) for _ in range(2))
     assert all(state.all_idle for state in states[2:])
     assert all(state.combat for state in states)
@@ -230,7 +230,7 @@ def test_starting_idle_never_chimes_without_combat():
     clock = _Clock()
     detector = DroneDetector(count=5, confirm_frames=3, clock=clock)
     states = [detector.update(_idle_frame()) for _ in range(10)]
-    clock.now = 10.0
+    clock.now = 20.0
     states.append(detector.update(_idle_frame()))
     assert all(state.all_idle for state in states[2:])
     assert not any(state.idle_chime for state in states)
@@ -242,11 +242,11 @@ def test_combat_then_idle_chimes_exactly_once():
     assert detector.update(_combat_frame()).combat is True
     states = [detector.update(_idle_frame()) for _ in range(3)]
     assert not any(state.idle_chime for state in states)
-    clock.now = 2.9
+    clock.now = 9.9
     assert detector.update(_idle_frame()).idle_chime is False
-    clock.now = 3.0
+    clock.now = 10.0
     assert detector.update(_idle_frame()).idle_chime is True
-    clock.now = 3.1
+    clock.now = 10.1
     assert detector.update(_idle_frame()).idle_chime is False
 
 
@@ -258,7 +258,7 @@ def test_return_only_then_idle_does_not_chime():
     for _ in range(4):
         assert detector.update(returned).idle_chime is False
     states = [detector.update(_idle_frame()) for _ in range(3)]
-    clock.now = 10.0
+    clock.now = 20.0
     states.append(detector.update(_idle_frame()))
     assert not any(state.idle_chime for state in states)
 
@@ -273,7 +273,7 @@ def test_combat_return_idle_chimes():
         assert detector.update(returned).idle_chime is False
     for _ in range(3):
         assert detector.update(_idle_frame()).idle_chime is False
-    clock.now = 3.0
+    clock.now = 10.0
     assert detector.update(_idle_frame()).idle_chime is True
 
 
@@ -286,9 +286,9 @@ def test_damaged_then_idle_chimes_after_confirmation():
     assert detector.update(_damaged_frame()).damaged is True
     for _ in range(3):
         assert detector.update(_idle_frame()).idle_chime is False
-    clock.now = 2.9
+    clock.now = 9.9
     assert detector.update(_idle_frame()).idle_chime is False
-    clock.now = 3.0
+    clock.now = 10.0
     assert detector.update(_idle_frame()).idle_chime is True
 
 
@@ -301,20 +301,20 @@ def test_idle_timer_resets_after_non_idle_combat_or_damage():
         detector.update(_combat_frame())
         for _ in range(3):
             detector.update(_idle_frame())
-        clock.now = 2.9
+        clock.now = 9.9
         assert detector.update(_idle_frame()).idle_chime is False
 
         detector.update(interrupt)
         assert detector._all_idle_since is None
-        clock.now = 3.0
+        clock.now = 10.0
         for _ in range(3):
             assert detector.update(_idle_frame()).idle_chime is False
-        assert detector._all_idle_since == 3.0
-        clock.now = 5.9
+        assert detector._all_idle_since == 10.0
+        clock.now = 19.9
         assert detector.update(_idle_frame()).idle_chime is False
-        clock.now = 6.0
+        clock.now = 20.0
         assert detector.update(_idle_frame()).idle_chime is True
-        clock.now = 6.1
+        clock.now = 20.1
         assert detector.update(_idle_frame()).idle_chime is False
 
 

@@ -40,15 +40,26 @@ def test_toggle_updates_mark(app, tmp_path):
     assert orange.text() == f"✓ {EVE_COLORS['orange']['label']}"
 
 
-def test_apply_persists_selection_and_strictness(app, tmp_path):
+def test_apply_persists_selection_and_compat(app, tmp_path):
     dialog = _dialog(tmp_path, colors=["red"])
     dialog._color_buttons["yellow"].setChecked(True)
     dialog._on_color_toggled("yellow")
-    dialog.strictness_slider.setValue(100)
+    dialog.compat_combo.setCurrentIndex(dialog.compat_combo.findData("strict"))
     dialog._apply()
     saved = ConfigManager(tmp_path / "config.json").data["detection"]
     assert saved["colors"] == ["red", "yellow"]
-    assert saved["strictness"] == 100
+    assert saved["compat"] == "strict"
+    assert "strictness" not in saved
+
+
+def test_compat_combo_has_three_modes_and_defaults_to_auto(app, tmp_path):
+    dialog = _dialog(tmp_path)
+    assert dialog.compat_combo.count() == 3
+    assert dialog.compat_combo.currentData() == "auto"
+    assert any(
+        "低对比" in dialog.compat_combo.itemText(index)
+        for index in range(dialog.compat_combo.count())
+    )
 
 
 def test_apply_without_selection_is_rejected(app, tmp_path):

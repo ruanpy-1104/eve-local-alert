@@ -4,7 +4,7 @@
 - 启动引导：选择目标程序 -> 在预览画面中框选监控区域 -> 颜色选择/监控；
 - 区域选择在控制面板的预览画面内完成（不再在被监控程序界面遮罩框选）；
 - 预览画面自动适应控件尺寸，无需手动缩放；
-- 启动 / 停止预警、实时预览、颜色选择（色块 + 识别程度）。
+- 启动 / 停止预警、实时预览、颜色选择（色块 + 兼容模式）。
 """
 from __future__ import annotations
 
@@ -15,10 +15,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter
+from PySide6.QtCore import QRect, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon, QImage
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -28,7 +29,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
-    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -62,50 +62,8 @@ logger = get_logger(__name__)
 REFRESH_GEOMETRY_EVERY = 30  # 每 N 帧重新定位窗口，跟随移动 / 缩放
 SELECTION_INTERVAL_MS = 150  # 框选模式下全窗口预览刷新间隔
 
-# 识别程度档位 -> 描述文案（三档 0/50/100）
-_STRICT_LEVELS = {0: "宽松", 50: "适中", 100: "严格"}
-
 # Python 拥有的无父顶层 QWidget 由模块级列表保活到进程退出，避免重复释放。
 _OVERLAY_KEEPALIVE: list = []
-
-
-class _StrictScale(QWidget):
-    """识别程度滑块下方的数字刻度（0/50/100）。
-
-    直接按滑轨分数位置绘制，避免布局错位：左右各留出手柄半宽内边距，
-    使两端刻度与滑轨端点、中间刻度与滑轨 50% 分位精确对齐。
-    水平撑满所在空间（与滑块同宽），保证刻度与滑轨对齐。
-    """
-
-    _VALUES = (0, 50, 100)
-    _INSET = 8  # 滑块手柄半宽，刻度端点对齐到滑轨端点
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(20)
-        # 水平撑满（与滑块同宽），垂直固定；不设最小宽，避免限制滑块扩展
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setPen(QColor(theme.MUTED))
-        font = painter.font()
-        font.setPointSize(8)
-        painter.setFont(font)
-        width = self.width()
-        track = width - 2 * self._INSET
-        box = 28.0
-        for v in self._VALUES:
-            x = self._INSET + v / 100.0 * track
-            if v == 0:
-                rect = QRectF(0, 0, box, self.height())
-                painter.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, str(v))
-            elif v == 100:
-                rect = QRectF(width - box, 0, box, self.height())
-                painter.drawText(rect, Qt.AlignRight | Qt.AlignVCenter, str(v))
-            else:
-                rect = QRectF(x - box / 2, 0, box, self.height())
-                painter.drawText(rect, Qt.AlignHCenter | Qt.AlignVCenter, str(v))
 
 
 def bgr_to_qimage(frame: np.ndarray) -> QImage:
@@ -485,11 +443,11 @@ class MonitorWorker(QThread):
 
 
 class ColorPickerDialog(QDialog):
-    """颜色选择：色块勾选警报颜色 + 识别程度（三档滑块）。
+    """颜色选择：勾选警报颜色并设置兼容模式。
 
     布局：标题作为内容区块的纯文字标题（无边框、位于区块外侧上方）；
     4 个色块等宽平铺在浅色卡片容器内（卡片本身含边框，色块上显示颜色名，勾选时
-    前缀 ✓）；识别程度为一行滑块（无卡片框，仅轨道有颜色，其余与背景一致）。
+    前缀 ✓）；兼容模式为三档下拉框。
     """
 
     _CARD_QSS = (
@@ -501,8 +459,8 @@ class ColorPickerDialog(QDialog):
         super().__init__(parent)
         self.config = config
 
-        self.setWindowTitle("颜色选择 · 警报颜色")
-        self.setFixedSize(520, 360)
+        self.setWindowTitle("颜色选择 · 警报颜色与兼容模式")
+        self.setFixedSize(520, 330)
         self._build_ui()
 
     # ---- UI ----
@@ -517,7 +475,9 @@ class ColorPickerDialog(QDialog):
         root.setContentsMargins(18, 16, 18, 16)
         root.setSpacing(14)
 
-        desc = QLabel("勾选需要警报的颜色，误报时往严格调，漏报时往宽松调")
+        desc = QLabel(
+            "勾选需要警报的颜色；兼容模式用于适配 HDR / 色彩管理差异"
+        )
         desc.setObjectName("descriptionLabel")
         desc.setWordWrap(True)
         root.addWidget(desc)
@@ -544,48 +504,26 @@ class ColorPickerDialog(QDialog):
         self._sync_colors_from_config()
         self._refresh_swatch_marks()
 
-        # ---- 识别程度：标题为纯文字（无卡片），滑块行无边框、仅轨道有颜色 ----
-        root.addWidget(self._make_section_title("识别程度"))
-
-        loose_lbl = QLabel("宽松")
-        strict_lbl = QLabel("严格")
-        loose_lbl.setObjectName("subtitleLabel")
-        strict_lbl.setObjectName("subtitleLabel")
-        self.strictness_slider = QSlider(Qt.Horizontal)
-        self.strictness_slider.setRange(0, 100)
-        self.strictness_slider.setSingleStep(50)
-        self.strictness_slider.setPageStep(50)
-        self.strictness_slider.setMinimumHeight(24)
-        self.strictness_slider.setValue(
-            int(self.config.data["detection"].get("strictness", 50))
+        root.addWidget(self._make_section_title("兼容模式"))
+        self.compat_combo = QComboBox()
+        self.compat_combo.addItem("自动（推荐）", "auto")
+        self.compat_combo.addItem(
+            "低对比兼容（HDR / 亮背景白图标漏报时）", "low_contrast"
         )
-        self.strictness_slider.valueChanged.connect(self._on_strictness_changed)
-        self.strictness_value = QLabel()
-        self.strictness_value.setMinimumWidth(76)
-        self.strictness_value.setAlignment(Qt.AlignCenter)
-        self.strictness_value.setContentsMargins(12, 0, 0, 0)  # 增大「严格」与「0·宽松」间距
-        # 滑块长度减半：与下方刻度统一固定宽；「宽松 / 严格 / 数值」与滑块轨道同列对齐
-        #（垂直居中于滑块行），刻度单独一行放在滑块正下方。
-        self.strictness_slider.setFixedWidth(150)
-        self._strict_scale = _StrictScale()
-        self._strict_scale.setFixedWidth(150)
-        strict_grid = QGridLayout()
-        strict_grid.setHorizontalSpacing(10)
-        strict_grid.setVerticalSpacing(4)
-        strict_grid.addWidget(loose_lbl, 0, 0, Qt.AlignVCenter)
-        strict_grid.addWidget(self.strictness_slider, 0, 1, Qt.AlignVCenter)
-        strict_grid.addWidget(strict_lbl, 0, 2, Qt.AlignVCenter)
-        strict_grid.addWidget(self.strictness_value, 0, 3, Qt.AlignVCenter)
-        strict_grid.addWidget(self._strict_scale, 1, 1)  # 刻度在滑块列正下方
-        # 整行左右对称居中
-        strict_row = QHBoxLayout()
-        strict_row.addStretch(1)
-        strict_row.addLayout(strict_grid)
-        strict_row.addStretch(1)
-        root.addLayout(strict_row)
-        self._update_strictness_label()
+        self.compat_combo.addItem("严格（误报较多时）", "strict")
+        compat = self.config.data["detection"].get("compat", "auto")
+        index = self.compat_combo.findData(compat)
+        self.compat_combo.setCurrentIndex(index if index >= 0 else 0)
+        root.addWidget(self.compat_combo)
 
-        # 底部少量弹性空白：内容紧凑，按钮行沉底，与识别程度卡片间隔留白自然
+        compat_hint = QLabel(
+            "只调整对比度/边缘/颜色门槛，不改变方格与网格判定。"
+        )
+        compat_hint.setObjectName("descriptionLabel")
+        compat_hint.setWordWrap(True)
+        root.addWidget(compat_hint)
+
+        # 底部少量弹性空白：内容紧凑，按钮行沉底
         root.addStretch(1)
 
         # ---- 底部：应用反馈（左） + 操作按钮（右） ----
@@ -650,21 +588,6 @@ class ColorPickerDialog(QDialog):
             btn.setChecked(name in active)
             btn.blockSignals(False)
 
-    def _update_strictness_label(self) -> None:
-        value = self.strictness_slider.value()
-        level = _STRICT_LEVELS.get(value, "适中")
-        self.strictness_value.setText(f"{value} · {level}")
-
-    def _on_strictness_changed(self, value: int) -> None:
-        # 固定档位 0/50/100：拖动时吸附到最近档位
-        snapped = round(value / 50) * 50
-        if snapped != value:
-            self.strictness_slider.blockSignals(True)
-            self.strictness_slider.setValue(snapped)
-            self.strictness_slider.blockSignals(False)
-            value = snapped
-        self._update_strictness_label()
-
     def _on_color_toggled(self, _name: str) -> None:
         """勾选颜色变化：刷新对勾标记。"""
         self._refresh_swatch_marks()
@@ -677,7 +600,8 @@ class ColorPickerDialog(QDialog):
             return
         det = dict(self.config.data["detection"])
         det["colors"] = colors
-        det["strictness"] = self.strictness_slider.value()
+        det["compat"] = self.compat_combo.currentData()
+        det.pop("strictness", None)
         self.config.update("detection", det)
         # 底部左侧短暂显示绿色「已应用」反馈（1.5 秒后自动清除）
         self._flash_apply_status("已应用", theme.SUCCESS, 1500)
@@ -1018,7 +942,7 @@ class PreviewDialog(QDialog):
     def _tick(self) -> None:
         """定时刷新：定位窗口 -> 读取尺寸 -> 捕获 ROI -> 检测 -> 叠加显示。"""
         self._tick_count += 1
-        # 检测参数变化（颜色 / 识别程度）时重建检测器，保持与配置一致
+        # 检测参数变化（颜色 / 兼容模式）时重建检测器，保持与配置一致
         key = repr(sorted(self.config.data["detection"].items()))
         if key != self._det_cfg_key:
             self._detector = Detector(**self.config.data["detection"])

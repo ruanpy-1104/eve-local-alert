@@ -151,9 +151,9 @@ class TestColorClassification:
     def test_black_is_not_a_default_target(self):
         assert not Detector().has_red(_one((0, 0, 0)))
 
-    @pytest.mark.parametrize("strictness", [0, 50, 100])
-    def test_mid_gray_neutral_is_stable(self, strictness):
-        assert Detector(colors=["gray_white"], strictness=strictness).has_red(_one(GRAY))
+    @pytest.mark.parametrize("compat", ["low_contrast", "auto", "strict"])
+    def test_mid_gray_neutral_is_stable(self, compat):
+        assert Detector(colors=["gray_white"], compat=compat).has_red(_one(GRAY))
 
     def test_strictness_clamped(self):
         assert Detector(strictness=999).strictness == 100
@@ -307,12 +307,22 @@ class TestSquareGeometry:
         assert not Detector().detect(None)
 
     def test_too_dark_colored_square_is_rejected(self):
-        assert not Detector(strictness=100).has_red(_one((0, 0, 30)))
+        assert not Detector(compat="strict").has_red(_one((0, 0, 30)))
 
     def test_loose_vs_strict_borderline_red(self):
         frame = _one((0, 0, 52))
-        assert Detector(strictness=0).has_red(frame)
-        assert not Detector(strictness=100).has_red(frame)
+        assert Detector(compat="low_contrast").has_red(frame)
+        assert not Detector(compat="strict").has_red(frame)
+
+    def test_shape_rules_do_not_change_with_compat(self):
+        low = Detector(compat="low_contrast")
+        wide_bar = _frame()
+        wide_bar[90:111, 40:210] = RED
+        circle = _frame()
+        cv2.circle(circle, (120, 100), 12, RED, -1)
+        assert not low.has_red(wide_bar)
+        assert not low.has_red(circle)
+        assert Detector(compat="strict").has_red(_one(RED))
 
 
 class TestTemporalConfirmation:
@@ -389,6 +399,18 @@ class TestTemporalConfirmation:
 
 
 class TestCompatibilityAndMasks:
+    def test_compat_normalization(self):
+        assert Detector(compat="bogus").compat == "auto"
+        assert Detector(strictness=0).compat == "low_contrast"
+        assert Detector(strictness=100).compat == "strict"
+        assert (
+            Detector(compat="low_contrast", strictness=100).compat
+            == "low_contrast"
+        )
+        assert Detector(compat="low_contrast").strictness == 0
+        assert Detector(compat="auto").strictness == 50
+        assert Detector(compat="strict").strictness == 100
+
     def test_downscale_parameter_does_not_change_result(self):
         frame = _column(RED)
         a = Detector(downscale=1)

@@ -27,9 +27,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "downscale": 2,
         # 警报颜色：4 种总览预设色（红 / 橙 / 黄 / 灰白），默认全部启用
         "colors": list(DEFAULT_ALERT_COLORS),
-        # 识别程度三档：0（宽松）/ 50（适中）/ 100（严格）。
-        # 首次使用（配置缺失 / 新装）默认 50（适中），应用保存后按用户上次记忆值持久化
-        "strictness": 50,
+        # 兼容模式只调整对比度、边缘与颜色阈值，不改变方格和网格结构判定
+        "compat": "auto",
     },
     "alert": {
         "sound_file": "assets/alert.wav",
@@ -60,27 +59,31 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # 旧版 config.json 中已废弃的检测字段（文字条形检测遗留），加载时自动剔除，避免传入 Detector 报错
 _OBSOLETE_DETECTION_KEYS = ("min_area", "min_aspect_ratio")
 
-# 识别程度从五档（0/25/50/75/100）收编为三档（0/50/100）的迁移：
-# 旧版遗留的 25/75 归档到最近三档；已在三档范围内的取值（0/50/100）原样保留——
-# 若对用户在三档下保存的 50（适中）重复归并，重启后会被误改成 0，破坏「记忆上次设置」。
-_VALID_STRICTNESS = (0, 50, 100)
+_VALID_COMPAT = ("auto", "low_contrast", "strict")
 _EMPTY_ROI = {"x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0}
 
 
-def _migrate_strictness(value: object) -> object:
-    """把旧五档遗留值归档到三档 0/50/100；三档取值原样保留（不做二次迁移）。"""
+def _compat_from_strictness(value: object) -> str:
+    """把旧识别程度迁移为兼容模式。"""
     try:
-        v = int(value)
-    except (TypeError, ValueError):
-        return value
-    if v in _VALID_STRICTNESS:
-        return v
-    return min(_VALID_STRICTNESS, key=lambda x: abs(x - v))
+        strictness = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return "auto"
+    if strictness <= 25:
+        return "low_contrast"
+    if strictness >= 75:
+        return "strict"
+    return "auto"
 
 
 def _normalize_detection(detection: dict) -> dict:
     for key in _OBSOLETE_DETECTION_KEYS:
         detection.pop(key, None)
+    strictness = detection.pop("strictness", None)
+    compat = detection.get("compat")
+    if compat not in _VALID_COMPAT:
+        compat = _compat_from_strictness(strictness)
+    detection["compat"] = compat
     return detection
 
 
@@ -212,6 +215,11 @@ class ConfigManager:
         try:
             with open(self.path, encoding="utf-8") as f:
                 loaded = json.load(f)
+            loaded_detection = loaded.get("detection")
+            if isinstance(loaded_detection, dict):
+                # 迁移必须在深度合并前识别旧 strictness；否则默认 compat=auto
+                # 会被误认为用户已显式选择 auto。
+                _normalize_detection(loaded_detection)
             data = _deep_merge(DEFAULT_CONFIG, loaded)
         except Exception:
             # 配置文件损坏 / 不可读 / 结构非法时回退默认配置，避免启动即崩溃
@@ -222,11 +230,6 @@ class ConfigManager:
             # 警报颜色收敛到 4 色预设：旧配置里已移除的颜色键在此被剔除（见函数注释）
             data["detection"]["colors"] = _normalize_colors(
                 data["detection"].get("colors")
-            )
-            # 识别程度档位收编：旧五档遗留值（25/75 等）归档到最近三档，
-            # 三档取值（0/50/100）原样保留，不二次迁移用户记忆的设置
-            data["detection"]["strictness"] = _migrate_strictness(
-                data["detection"].get("strictness", 50)
             )
         # 远程预警每次启动都默认不开启（enabled 强制置 False），
         # 其余选项保留用户最后一次修改——避免用户忘记关闭导致意外联网推送。

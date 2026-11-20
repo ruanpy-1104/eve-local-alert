@@ -1,6 +1,8 @@
 """ConfigManager 单元测试：默认值合并、读写持久化、局部更新。"""
 import json
 
+import pytest
+
 from core.config import ConfigManager
 
 
@@ -9,6 +11,8 @@ class TestConfig:
         cfg = ConfigManager(tmp_path / "config.json")
         assert cfg.data["loop"]["fps"] == 6
         assert cfg.data["detection"]["confirm_frames"] == 3
+        assert cfg.data["detection"]["compat"] == "auto"
+        assert "strictness" not in cfg.data["detection"]
 
     def test_save_and_reload(self, tmp_path):
         path = tmp_path / "config.json"
@@ -37,7 +41,8 @@ class TestConfig:
     def test_project_config_roundtrip(self):
         # 项目自带的 config.json 必须可读且完整（阈值等用户可调值不在此断言）
         cfg = ConfigManager("config.json")
-        assert 0 <= cfg.data["detection"]["strictness"] <= 100
+        assert cfg.data["detection"]["compat"] in ("auto", "low_contrast", "strict")
+        assert "strictness" not in cfg.data["detection"]
         assert cfg.data["detection"]["confirm_frames"] > 0
         assert cfg.data["roi"]["width"] > 0
 
@@ -94,38 +99,54 @@ class TestConfig:
         assert ra["cooldown_enabled"] is True
         assert ra["cooldown_minutes"] == 10
 
-    def test_strictness_migrated_from_five_tiers(self, tmp_path):
-        # 旧五档遗留值归档：75->50、25->0；三档取值（0/50/100）原样保留
-        from core.config import _migrate_strictness
+    @pytest.mark.parametrize(
+        ("strictness", "expected"),
+        [
+            (25, "low_contrast"),
+            (50, "auto"),
+            (75, "strict"),
+            (100, "strict"),
+            (0, "low_contrast"),
+            (60, "auto"),
+            (20, "low_contrast"),
+        ],
+    )
+    def test_compat_from_strictness(self, strictness, expected):
+        from core.config import _compat_from_strictness
 
-        assert _migrate_strictness(75) == 50
-        assert _migrate_strictness(50) == 50
-        assert _migrate_strictness(25) == 0
-        assert _migrate_strictness(0) == 0
-        assert _migrate_strictness(100) == 100
-        # 未知值就近归档到三档
-        assert _migrate_strictness(60) == 50
-        assert _migrate_strictness(20) == 0
+        assert _compat_from_strictness(strictness) == expected
 
-    def test_strictness_migrated_on_load(self, tmp_path):
-        # 加载旧配置：五档遗留值自动归档；三档取值原样保留（用户记忆不被二次迁移）
+    def test_old_strictness_migrated_on_load(self, tmp_path):
         path = tmp_path / "config.json"
         path.write_text(
             json.dumps({"detection": {"strictness": 75}}), encoding="utf-8"
         )
         cfg = ConfigManager(path)
-        assert cfg.data["detection"]["strictness"] == 50
+        assert cfg.data["detection"]["compat"] == "strict"
+        assert "strictness" not in cfg.data["detection"]
 
-        path2 = tmp_path / "config2.json"
-        path2.write_text(
-            json.dumps({"detection": {"strictness": 50}}), encoding="utf-8"
+    def test_explicit_compat_wins_over_old_strictness(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "detection": {
+                        "compat": "low_contrast",
+                        "strictness": 100,
+                    }
+                }
+            ),
+            encoding="utf-8",
         )
-        assert ConfigManager(path2).data["detection"]["strictness"] == 50
+        cfg = ConfigManager(path)
+        assert cfg.data["detection"]["compat"] == "low_contrast"
+        assert "strictness" not in cfg.data["detection"]
 
-    def test_strictness_default_is_fifty(self):
+    def test_compat_defaults_to_auto(self):
         from core.config import DEFAULT_CONFIG
 
-        assert DEFAULT_CONFIG["detection"]["strictness"] == 50
+        assert DEFAULT_CONFIG["detection"]["compat"] == "auto"
+        assert "strictness" not in DEFAULT_CONFIG["detection"]
 
 
 class TestColorMigration:

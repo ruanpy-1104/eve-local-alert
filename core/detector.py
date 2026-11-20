@@ -21,12 +21,28 @@ from core.colors import (
     CLASSIFIER_COLORS,
     COLOR_ALIASES,
     DEFAULT_ALERT_COLORS,
-    DEFAULT_STRICTNESS,
 )
 
 _HOSTILE_COLORS = frozenset(("red", "orange", "yellow", "gray_white"))
 _FRIENDLY_COLORS = frozenset(("blue", "green", "purple"))
 _KNOWN_COLORS = _HOSTILE_COLORS | _FRIENDLY_COLORS
+COMPAT_MODES = ("auto", "low_contrast", "strict")
+_COMPAT_TO_STRICTNESS = {"low_contrast": 0, "auto": 50, "strict": 100}
+
+
+def _normalize_compat(compat: object, strictness: object) -> str:
+    """兼容模式优先；缺失或非法时由旧 strictness 迁移。"""
+    if isinstance(compat, str) and compat in COMPAT_MODES:
+        return compat
+    try:
+        value = int(strictness)
+    except (TypeError, ValueError, OverflowError):
+        return "auto"
+    if value <= 25:
+        return "low_contrast"
+    if value >= 75:
+        return "strict"
+    return "auto"
 
 
 @dataclass
@@ -78,7 +94,8 @@ class Detector:
         confirm_frames: int = 3,
         downscale: int = 2,
         colors=None,
-        strictness: int = DEFAULT_STRICTNESS,
+        compat: str | None = None,
+        strictness: int | None = None,
         **legacy,
     ):
         del legacy
@@ -104,10 +121,8 @@ class Detector:
             for canonical in (COLOR_ALIASES.get(name, name),)
             if canonical in _HOSTILE_COLORS
         )
-        try:
-            self.strictness = max(0, min(100, int(strictness)))
-        except (TypeError, ValueError, OverflowError):
-            self.strictness = DEFAULT_STRICTNESS
+        self.compat = _normalize_compat(compat, strictness)
+        self.strictness = _COMPAT_TO_STRICTNESS[self.compat]
 
         self.last_boxes: list[tuple[int, int, int, int]] = []
         self.last_all_boxes: list[tuple[int, int, int, int]] = []
@@ -129,16 +144,55 @@ class Detector:
 
     @property
     def _t(self) -> float:
-        return self.strictness / 100.0
+        return {"low_contrast": 0.0, "auto": 0.5, "strict": 1.0}[self.compat]
 
     @property
     def _contrast_floor(self) -> float:
-        # 默认 10；白图标 V185 对 V205 背景仍可稳定越过。
-        return 4.5 + 8.0 * self._t
+        return {"low_contrast": 4.5, "auto": 8.5, "strict": 12.5}[self.compat]
 
     @property
     def _single_contrast_floor(self) -> float:
-        return self._contrast_floor + 2.0 + 3.0 * self._t
+        return {"low_contrast": 6.0, "auto": 10.0, "strict": 15.0}[self.compat]
+
+    @property
+    def _chroma_floor(self) -> int:
+        return {"low_contrast": 18, "auto": 25, "strict": 32}[self.compat]
+
+    @property
+    def _edge_low(self) -> int:
+        return {"low_contrast": 7, "auto": 11, "strict": 15}[self.compat]
+
+    @property
+    def _edge_high(self) -> int:
+        return {"low_contrast": 18, "auto": 25, "strict": 32}[self.compat]
+
+    @property
+    def _adaptive_margin(self) -> int:
+        return {"low_contrast": 2, "auto": 3, "strict": 5}[self.compat]
+
+    @property
+    def _dark_delta_floor(self) -> int:
+        return {"low_contrast": 1, "auto": 2, "strict": 3}[self.compat]
+
+    @property
+    def _white_contrast_floor(self) -> float:
+        return {"low_contrast": 1.5, "auto": 2.5, "strict": 3.5}[self.compat]
+
+    @property
+    def _s_floor(self) -> int:
+        return {"low_contrast": 70, "auto": 85, "strict": 100}[self.compat]
+
+    @property
+    def _v_floor(self) -> int:
+        return {"low_contrast": 40, "auto": 58, "strict": 70}[self.compat]
+
+    @property
+    def _white_floor(self) -> int:
+        return {"low_contrast": 75, "auto": 90, "strict": 100}[self.compat]
+
+    @property
+    def _hue_tolerance(self) -> int:
+        return {"low_contrast": 18, "auto": 16, "strict": 12}[self.compat]
 
     def _as_bgr(self, frame_bgr: np.ndarray) -> np.ndarray | None:
         if frame_bgr is None:
@@ -180,13 +234,12 @@ class Detector:
         floor = self._contrast_floor
         contrast_mask = ((gray_delta >= floor) | (lab_delta >= floor)).astype(np.uint8) * 255
         chroma = np.maximum(cv2.absdiff(lab[..., 1], 128), cv2.absdiff(lab[..., 2], 128))
-        chroma_floor = int(round(18 + 14 * self._t))
         chroma_mask = (
-            (chroma >= chroma_floor) & (hsv[..., 2] >= max(20, int(25 + 15 * self._t)))
+            (chroma >= self._chroma_floor) & (hsv[..., 2] >= 20)
         ).astype(np.uint8) * 255
-        edge_low = int(round(7 + 8 * self._t))
-        edge_high = int(round(18 + 14 * self._t))
-        edges = cv2.Canny(gray, edge_low, edge_high, L2gradient=True)
+        edges = cv2.Canny(
+            gray, self._edge_low, self._edge_high, L2gradient=True
+        )
 
         # 大尺度块估计独立于某个固定颜色的局部背景。对“略暗于亮墙”的
         # 纯色面，自适应阈值能得到完整方块；水平闭运算只保留确实更暗的像素，
@@ -194,14 +247,13 @@ class Detector:
         max_side = min(48, max(15, int(round(min(gray.shape) * 0.45))))
         block = max_side + 3
         block = min(51, block + 1 - block % 2)
-        margin = int(round(2 + 3 * self._t))
         dark_adaptive = cv2.adaptiveThreshold(
             gray,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY_INV,
             block,
-            margin,
+            self._adaptive_margin,
         )
         horizontal_bg = cv2.morphologyEx(
             gray,
@@ -210,7 +262,7 @@ class Detector:
             borderType=cv2.BORDER_REPLICATE,
         )
         dark_delta = cv2.subtract(horizontal_bg, gray)
-        darker_than_bg = (dark_delta >= max(1, int(round(1 + 2 * self._t)))).astype(
+        darker_than_bg = (dark_delta >= self._dark_delta_floor).astype(
             np.uint8
         ) * 255
         dark_surface = cv2.bitwise_and(dark_adaptive, darker_than_bg)
@@ -276,7 +328,7 @@ class Detector:
         distance = np.abs(
             lab_roi.astype(np.int16) - reference.astype(np.int16)
         ).max(axis=2)
-        color_tolerance = int(round(30 - 5 * self._t))
+        color_tolerance = 28
         face_fill = float((distance[face_mask] <= color_tolerance).mean())
         corner_fill = float((distance[corner_mask] <= color_tolerance).mean())
 
@@ -382,14 +434,14 @@ class Detector:
             corner_fill, face_fill, contrast, med_h, med_s, med_v = self._surface_stats(
                 lab, hsv, x, y, w, h
             )
-            if corner_fill < 0.60 or face_fill < 0.45 + 0.05 * self._t:
+            if corner_fill < 0.60 or face_fill < 0.475:
                 continue
             if med_s < 70 and face_fill < 0.68:
                 continue
             if low_contrast_dark and (med_s >= 70 or med_v < 175):
                 continue
             contrast_floor = (
-                max(1.5, 1.0 + 2.0 * self._t)
+                self._white_contrast_floor
                 if low_contrast_dark
                 else self._contrast_floor
             )
@@ -457,13 +509,13 @@ class Detector:
         return min(delta, 180 - delta)
 
     def _classify(self, candidate: _Square) -> str:
-        s_floor = int(round(70 + 30 * self._t))
-        v_floor = int(round(40 + 35 * self._t))
-        white_floor = int(round(75 + 30 * self._t))
-
-        if candidate.med_s < s_floor:
-            return "gray_white" if candidate.med_v >= white_floor else "unknown"
-        if candidate.med_v < v_floor:
+        if candidate.med_s < self._s_floor:
+            return (
+                "gray_white"
+                if candidate.med_v >= self._white_floor
+                else "unknown"
+            )
+        if candidate.med_v < self._v_floor:
             return "unknown"
 
         nearest = "unknown"
@@ -475,8 +527,11 @@ class Detector:
             distance = self._hue_distance(candidate.med_h, hue)
             if distance < nearest_distance:
                 nearest, nearest_distance = name, distance
-        tolerance = int(round(13 + 5 * self._t))
-        return nearest if nearest_distance <= tolerance else "unknown"
+        return (
+            nearest
+            if nearest_distance <= self._hue_tolerance
+            else "unknown"
+        )
 
     def _column_cluster(self, candidates: list[_Square]) -> list[_Square]:
         if not candidates:
@@ -739,8 +794,6 @@ class Detector:
 
         first = int(np.floor((0 - phase) / pitch)) - 1
         last = int(np.ceil((height - phase) / pitch)) + 1
-        white_floor = int(round(75 + 30 * self._t))
-        white_contrast_floor = 1.5 + 2.0 * self._t
         completed = list(accepted)
         first_cy = min(candidate.cy for candidate in accepted)
         last_cy = max(candidate.cy for candidate in accepted)
@@ -760,11 +813,11 @@ class Detector:
                     corner < 0.78
                     or face < 0.68
                     or med_s >= 70
-                    or med_v < white_floor
+                    or med_v < self._white_floor
                 ):
                     continue
                 if (
-                    contrast >= white_contrast_floor
+                    contrast >= self._white_contrast_floor
                     or self._slot_has_center_pattern_edge_evidence(
                         image_hsv, x0, y0, size
                     )
